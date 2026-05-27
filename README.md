@@ -43,6 +43,10 @@ Set `Case API base URL` in Settings → Case API before use.
 - `web/esm/` — ES module tree
 - `web/vendor/` — Cornerstone.js, pdf.js, WASM codecs
 
+## Agent control
+
+The viewer exposes `window.dispatchViewerCommand` for programmatic control from AI agents (OpenClaw, Hermes, Codex, Claude, custom). See [AGENT.md](AGENT.md) for the full command reference, inline playbook schema, and integration notes.
+
 ## Related
 
 - [elvie-server](../elvie-server) — Orthanc/DICOMweb + Whisper + OHIF via Docker Compose
