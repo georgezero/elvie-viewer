@@ -12595,7 +12595,12 @@ function attachNativeCornerstoneInteractions(element, viewport, pane, viewportId
     const dx = e.clientX - drag.x;
     const dy = e.clientY - drag.y;
     try {
-      if (drag.mode === 'pan') nativeCornerstonePanViewport(viewport, drag.camera, dx, dy, element);
+      if (drag.mode === 'pan') {
+        nativeCornerstonePanViewport(viewport, drag.camera, dx, dy, element);
+        drag.x = e.clientX;
+        drag.y = e.clientY;
+        drag.camera = typeof viewport.getCamera === 'function' ? viewport.getCamera() : drag.camera;
+      }
       else if (drag.mode === 'wl') nativeCornerstoneWindowViewport(viewport, drag.voiRange, dx, dy);
       else if (drag.mode === 'zoom') {
         const threshold = e.pointerType === 'touch' ? 10 : 8;
