@@ -16898,6 +16898,20 @@ window.loadCaseFromApi = loadCaseFromApi;
   const _urlParams = new URLSearchParams(window.location.search);
   const _urlCaseId = _urlParams.get('caseId');
   const _urlAccession = _urlParams.get('accession');
+  const _urlCaseApiBaseUrl = _urlParams.get('caseApiBaseUrl') || _urlParams.get('caseApiUrl') || _urlParams.get('caseApi');
+  const _urlDicomWebBaseUrl = _urlParams.get('dicomWebBaseUrl') || _urlParams.get('dicomWebUrl') || _urlParams.get('dicomweb');
+  if (_urlCaseApiBaseUrl) {
+    state.caseApiBaseUrl = _urlCaseApiBaseUrl.replace(/\/$/, '');
+    localStorage.setItem('lv_elvie_case_api_url', state.caseApiBaseUrl);
+    const _caseApiInput = document.getElementById('caseApiBaseUrl');
+    if (_caseApiInput) _caseApiInput.value = state.caseApiBaseUrl;
+  }
+  if (_urlDicomWebBaseUrl) {
+    state.dicomWebBaseUrl = _urlDicomWebBaseUrl.replace(/\/$/, '');
+    localStorage.setItem('lv_hermes_dicomweb', state.dicomWebBaseUrl);
+    const _dicomWebInput = document.getElementById('dicomWebBaseUrl');
+    if (_dicomWebInput) _dicomWebInput.value = state.dicomWebBaseUrl;
+  }
   if ((_urlCaseId || _urlAccession) && cfg().enableUrlCaseLaunch) {
     void loadCaseFromApi({ caseId: _urlCaseId || null, accession: _urlAccession || null });
   }
