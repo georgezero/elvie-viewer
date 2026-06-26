@@ -63,6 +63,7 @@ export function buildHyperframesLaunchUrl(manifestUrl, options = {}) {
  * @param {boolean} [params.includeTrace=false]
  * @param {string} [params.generatedAt] - injectable ISO timestamp for tests
  * @param {string} [params.baseUrl]
+ * @param {Map}    [params.evidenceMap] - Map<findingId, EvidenceResult[]> from evidenceCollector
  * @param {(manifest: object, env: object) => string} [params.publishManifest]
  * @param {(url: string) => any} [params.openWindow] - defaults to window.open
  * @param {object} [params.env] - { Blob, URL } overrides for tests
@@ -77,6 +78,7 @@ export function launchHyperframesPresentation(params = {}) {
     includeTrace = false,
     generatedAt,
     baseUrl,
+    evidenceMap,
     publishManifest = defaultPublishManifest,
     openWindow,
     env = {}
@@ -97,7 +99,8 @@ export function launchHyperframesPresentation(params = {}) {
     source,
     debug,
     includeTrace,
-    generatedAt
+    generatedAt,
+    evidenceMap: evidenceMap instanceof Map ? evidenceMap : undefined
   });
 
   let manifestUrl;

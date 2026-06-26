@@ -90,10 +90,12 @@ async function screenshot(page, name) {
 
 function assertManifestStructure(manifest, { accession, source = 'demo' }) {
   // Required top-level fields
-  for (const key of ['payloadVersion', 'source', 'generatedAt', 'accession', 'reportContext', 'findings']) {
+  for (const key of ['payloadVersion', 'source', 'generatedAt', 'accession', 'reportContext', 'findings', 'sections', 'presentationTitle', 'studyLabel']) {
     expect(manifest, `missing field: ${key}`).toHaveProperty(key);
   }
   expect(manifest.accession).toBe(accession);
+  expect(manifest.studyLabel).toBe(accession);
+  expect(manifest.presentationTitle).toBeTruthy();
   // reportContext fields
   const rc = manifest.reportContext;
   expect(rc.accession).toBe(accession);
@@ -101,13 +103,34 @@ function assertManifestStructure(manifest, { accession, source = 'demo' }) {
   expect(typeof rc.findingCount).toBe('number');
   expect(typeof rc.navigableFindingCount).toBe('number');
   expect(rc.navigableFindingCount).toBeGreaterThanOrEqual(0);
-  // findings array
+  expect(typeof rc.sectionCount).toBe('number');
+  // sections and findings arrays
+  expect(Array.isArray(manifest.sections)).toBe(true);
   expect(Array.isArray(manifest.findings)).toBe(true);
+  expect(manifest.sections.length).toBe(rc.sectionCount);
   // No raw report text in the default payload
   expect(manifest).not.toHaveProperty('trace');
   const json = JSON.stringify(manifest);
   expect(json).not.toContain('CLINICAL HISTORY');
   expect(json).not.toContain('TECHNIQUE');
+}
+
+const EVIDENCE_STATUSES = new Set(['captured', 'no_viewer', 'no_canvas', 'canvas_empty', 'capture_failed', 'skipped_non_navigable']);
+
+function assertSectionEvidence(section, { expectNavigable, expectEvidenceStatus } = {}) {
+  expect(section, 'section missing id').toHaveProperty('id');
+  expect(section, 'section missing speakerNotes').toHaveProperty('speakerNotes');
+  expect(Array.isArray(section.imageEvidence), 'imageEvidence must be array').toBe(true);
+  for (const ev of section.imageEvidence) {
+    expect(EVIDENCE_STATUSES.has(ev.status), `unknown evidence status: ${ev.status}`).toBe(true);
+  }
+  if (expectEvidenceStatus) {
+    expect(section.imageEvidence.length).toBeGreaterThan(0);
+    expect(section.imageEvidence[0].status).toBe(expectEvidenceStatus);
+  }
+  if (typeof expectNavigable === 'boolean') {
+    expect(section.navigable).toBe(expectNavigable);
+  }
 }
 
 function assertFindingStructure(finding, { expectedAccession }) {
@@ -155,6 +178,10 @@ test.describe('CXR demo report', () => {
       assertFindingStructure(f, { expectedAccession: 'CXR-88997' });
     }
 
+    // CXR: all findings negative → 0 positive → sections is empty
+    expect(manifest.sections).toEqual([]);
+    expect(manifest.reportContext.sectionCount).toBe(0);
+
     await screenshot(page, 'cxr-launch-non-navigable');
   });
 });
@@ -162,12 +189,13 @@ test.describe('CXR demo report', () => {
 // ── CT Head (NI9f7ff9) — 2 navigable findings ────────────────────────────────
 
 test.describe('CT Head demo report', () => {
-  test('loads report, launches with 2 navigable findings, anchors correct', async ({ page }) => {
+  test('loads report, launches with 2 navigable findings, anchors correct, sections with evidence', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, 'NI9f7ff9');
-    await screenshot(page, 'ct-head-report-loaded');
+    await screenshot(page, 'ct-head-presentation-source');
 
     await clickPresentAndWait(page);
+    await screenshot(page, 'ct-head-evidence-captured');
 
     const urls = await getCapturedUrls(page);
     expect(urls).toHaveLength(1);
@@ -213,6 +241,27 @@ test.describe('CT Head demo report', () => {
       assertFindingStructure(f, { expectedAccession: 'NI9f7ff9' });
     }
 
+    // Phase 3: sections — positive findings only, with speakerNotes and imageEvidence
+    // CT Head has 2 navigable positive findings in sections
+    expect(manifest.sections.length).toBeGreaterThanOrEqual(2);
+    const caudateSection = manifest.sections.find(s => s.id === 'chronic-left-caudate-infarct');
+    const fractureSection = manifest.sections.find(s => s.id === 'healed-left-vertex-fracture');
+    expect(caudateSection).toBeDefined();
+    expect(fractureSection).toBeDefined();
+
+    // Each navigable section must have evidence assigned (status varies by environment)
+    assertSectionEvidence(caudateSection, { expectNavigable: true });
+    assertSectionEvidence(fractureSection, { expectNavigable: true });
+
+    // Navigable section speakerNotes must mention location
+    expect(caudateSection.speakerNotes).toContain('Series 2');
+    expect(caudateSection.speakerNotes).toContain('Image 21');
+    expect(fractureSection.speakerNotes).toContain('Series 2');
+    expect(fractureSection.speakerNotes).toContain('Image 36');
+
+    // presentationTitle should include the accession
+    expect(manifest.presentationTitle).toContain('NI9f7ff9');
+
     await screenshot(page, 'ct-head-launch-navigable');
   });
 });
@@ -220,12 +269,13 @@ test.describe('CT Head demo report', () => {
 // ── MR Knee (3852755662087132) — 2 navigable + 1 non-navigable positive ──────
 
 test.describe('MR Knee demo report', () => {
-  test('loads report, launches with 2 navigable findings and explicit non-navigable representation', async ({ page }) => {
+  test('loads report, launches with 2 navigable findings, chondromalacia text-only, sections with evidence', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, '3852755662087132');
-    await screenshot(page, 'mr-knee-report-loaded');
+    await screenshot(page, 'mr-knee-presentation-source');
 
     await clickPresentAndWait(page);
+    await screenshot(page, 'mr-knee-evidence-captured');
 
     const urls = await getCapturedUrls(page);
     expect(urls).toHaveLength(1);
@@ -273,6 +323,39 @@ test.describe('MR Knee demo report', () => {
     for (const f of manifest.findings) {
       assertFindingStructure(f, { expectedAccession: '3852755662087132' });
     }
+
+    // Phase 3: sections — 3 positive findings become 3 sections
+    // MR Knee positive findings: meniscus (navigable), effusion (navigable), chondromalacia (non-navigable)
+    expect(manifest.sections.length).toBe(3);
+    expect(manifest.reportContext.sectionCount).toBe(3);
+
+    const meniscusSection = manifest.sections.find(s => s.id === 'medial-meniscus-tear');
+    const effusionSection = manifest.sections.find(s => s.id === 'joint-effusion');
+    const chondroSection = manifest.sections.find(s => s.id === 'chondromalacia-patella');
+
+    expect(meniscusSection).toBeDefined();
+    expect(effusionSection).toBeDefined();
+    expect(chondroSection).toBeDefined();
+
+    // Navigable sections: meniscus and effusion have evidence records
+    assertSectionEvidence(meniscusSection, { expectNavigable: true });
+    assertSectionEvidence(effusionSection, { expectNavigable: true });
+
+    // chondromalacia is non-navigable → evidence is skipped_non_navigable (text-only section)
+    assertSectionEvidence(chondroSection, {
+      expectNavigable: false,
+      expectEvidenceStatus: 'skipped_non_navigable'
+    });
+
+    // Non-navigable section speakerNotes must note absence of location
+    expect(chondroSection.speakerNotes).toContain('No specific image location');
+    expect(chondroSection.speakerNotes).not.toContain('Series');
+
+    // Navigable speakerNotes mention location
+    expect(meniscusSection.speakerNotes).toContain('Series 6');
+    expect(meniscusSection.speakerNotes).toContain('Image 23');
+    expect(effusionSection.speakerNotes).toContain('Series 3');
+    expect(effusionSection.speakerNotes).toContain('Image 14');
 
     await screenshot(page, 'mr-knee-launch-navigable');
   });

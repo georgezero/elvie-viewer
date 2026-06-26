@@ -14,6 +14,13 @@
 //   - Per-finding raw text, provenance, and report text are only included in an
 //     optional `trace` block, and only when BOTH debug is enabled AND
 //     includeTrace is requested.
+//
+// Presentation structure:
+//   - `sections`: positive findings only, each with speakerNotes and imageEvidence.
+//     Negative/normal findings are excluded from sections by default.
+//   - `findings`: all findings (positive + negative) for compatibility.
+//   - `presentationTitle`: derived from modality + accession.
+//   - `studyLabel`: accession string.
 
 import { normalizeFindingImageReference } from '../report/imageLinkProvider.mjs';
 
@@ -90,6 +97,29 @@ function buildImageAnchors(coords) {
   return [anchor];
 }
 
+// Deterministic speaker notes for a single finding section.
+function buildSpeakerNotes(finding, coords, nav) {
+  const label = norm(finding?.label);
+  if (!label) return '';
+  const desc = conciseFindingText(finding);
+  const base = (desc && desc !== label) ? `${label}. ${desc}.` : `${label}.`;
+  if (nav.navigable && coords.seriesNumber != null && coords.imageNumber != null) {
+    return `${base} Located at Series ${coords.seriesNumber}, Image ${coords.imageNumber}.`;
+  }
+  if (nav.navigable && coords.seriesNumber != null) {
+    return `${base} Located at Series ${coords.seriesNumber}.`;
+  }
+  return `${base} No specific image location is available for navigation.`;
+}
+
+// Derive a human-readable presentation title from report context and findings.
+function derivePresentationTitle(accession, positiveFindings) {
+  const modality = norm(positiveFindings.find(f => norm(f?.modality))?.modality);
+  if (modality && accession) return `${modality} — ${accession}`;
+  if (accession) return `Study — ${accession}`;
+  return 'Clinical Presentation';
+}
+
 function normalizeFindingEntry(finding, accession, index, { debug, includeTrace }) {
   const coords = resolveCoords(finding);
   const nav = deriveNavigability(finding, coords);
@@ -129,6 +159,42 @@ function normalizeFindingEntry(finding, accession, index, { debug, includeTrace 
   return entry;
 }
 
+// Build a presentation section from a positive finding (no negative findings).
+// Each section includes speakerNotes and an imageEvidence slot populated from
+// the optional evidenceMap.
+function buildPresentationSection(finding, accession, index, evidenceMap, { debug, includeTrace }) {
+  const coords = resolveCoords(finding);
+  const nav = deriveNavigability(finding, coords);
+  const findingId = norm(finding?.id) || `section-${index + 1}`;
+  const findingAccession = norm(finding?.accession) || norm(accession) || null;
+  const evidence = evidenceMap?.get(findingId);
+  const imageEvidence = Array.isArray(evidence) ? evidence : (evidence ? [evidence] : []);
+
+  const section = {
+    id: findingId,
+    title: norm(finding?.label) || findingId,
+    text: conciseFindingText(finding),
+    accession: findingAccession,
+    navigable: nav.navigable,
+    navigationStatus: nav.navigationStatus,
+    nonNavigableReason: nav.reason,
+    seriesNumber: coords.seriesNumber,
+    imageNumber: coords.imageNumber,
+    speakerNotes: buildSpeakerNotes(finding, coords, nav),
+    imageEvidence
+  };
+
+  if (debug && includeTrace) {
+    section.trace = {
+      rawText: norm(finding?.rawText),
+      severity: norm(finding?.severity) || null,
+      source: norm(finding?.source) || null
+    };
+  }
+
+  return section;
+}
+
 /**
  * Build a deterministic, versioned PresentationManifest from a PresentationContext.
  *
@@ -137,11 +203,12 @@ function normalizeFindingEntry(finding, accession, index, { debug, includeTrace 
  *
  * @param {object} context - PresentationContext (already-parsed report state)
  * @param {object} [options]
- * @param {string}  [options.source]       - Manifest origin label (default DEFAULT_MANIFEST_SOURCE)
- * @param {string}  [options.generatedAt]  - ISO timestamp; injectable for deterministic tests
- * @param {boolean} [options.debug=false]  - Master switch for trace/debug content
+ * @param {string}  [options.source]         - Manifest origin label (default DEFAULT_MANIFEST_SOURCE)
+ * @param {string}  [options.generatedAt]    - ISO timestamp; injectable for deterministic tests
+ * @param {boolean} [options.debug=false]    - Master switch for trace/debug content
  * @param {boolean} [options.includeTrace=false] - Request trace; only honored when debug is true
- * @param {boolean} [options.includeNegative=true] - Represent negative/non-navigable findings
+ * @param {boolean} [options.includeNegative=true] - Represent negative/non-navigable in findings[]
+ * @param {Map}     [options.evidenceMap]    - Map<findingId, EvidenceResult[]> from evidenceCollector
  * @returns {object} PresentationManifest
  */
 export function buildPresentationManifest(context, options = {}) {
@@ -152,6 +219,7 @@ export function buildPresentationManifest(context, options = {}) {
   // includeTrace is only ever honored behind the explicit debug flag.
   const includeTrace = debug && !!options.includeTrace;
   const includeNegative = options.includeNegative !== false;
+  const evidenceMap = options.evidenceMap instanceof Map ? options.evidenceMap : null;
 
   const accession = norm(ctx.accession) || null;
   const positive = Array.isArray(ctx.positiveFindings) ? ctx.positiveFindings : [];
@@ -163,21 +231,30 @@ export function buildPresentationManifest(context, options = {}) {
   );
   const navigableCount = findings.filter((f) => f.navigable).length;
 
+  // sections = positive findings only, enriched with speakerNotes and imageEvidence.
+  const sections = positive.map((f, i) =>
+    buildPresentationSection(f, accession, i, evidenceMap, { debug, includeTrace })
+  );
+
   const manifest = {
     payloadVersion: PRESENTATION_MANIFEST_VERSION,
     source,
     generatedAt,
     accession,
+    presentationTitle: derivePresentationTitle(accession, positive),
+    studyLabel: accession || null,
     reportContext: {
       accession,
       reportSource: norm(ctx.source) || null,
-      modality: norm(ctx.modality) || null,
+      modality: norm(ctx.modality) || norm(positive[0]?.modality) || null,
       title: norm(ctx.title) || null,
       hasReportText: !!norm(ctx.reportText),
       findingCount: findings.length,
       navigableFindingCount: navigableCount,
-      nonNavigableFindingCount: findings.length - navigableCount
+      nonNavigableFindingCount: findings.length - navigableCount,
+      sectionCount: sections.length
     },
+    sections,
     findings
   };
 

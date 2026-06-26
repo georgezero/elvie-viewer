@@ -68,7 +68,8 @@ Playwright starts `python3 -m http.server 4173` from the `web/` directory automa
 
 Limitations:
 - The v1 manifest transport uses session-scoped `blob:` URLs (same-origin only). Tests verify the URL shape; actual cross-origin resolution requires a server-side publish step.
-- No DICOM or DICOMweb server is required for browser tests — they use injected mock report contexts.
+- No DICOM or DICOMweb server is required for browser tests — they use injected mock report contexts or the seeded demo reports.
+- Image evidence (`imageEvidence` in each manifest section) is collected by navigating to each positive finding and capturing the active Cornerstone canvas via `canvas.toDataURL()`. Without a DICOMweb server, canvases are blank and evidence records carry an explicit status (`no_viewer`, `no_canvas`, or `skipped_non_navigable`) rather than a data URL. The manifest is still valid and Hyperframes-launchable; the status fields let the consumer decide how to handle missing visuals.
 
 ## Related
 

@@ -16659,13 +16659,26 @@ window.openAgentxReport = openAgentxReport;
 async function launchHyperframesPresentation(opts = {}) {
   const context = (typeof getActiveReportContext === 'function') ? getActiveReportContext() : null;
   const debug = !!(opts.debug ?? window.__elvieHyperDebug);
+
+  const btn = document.getElementById('rpPresentBtn');
+  const prevBtnText = btn?.textContent ?? 'PRESENT';
+  if (btn) btn.textContent = 'PREPARING…';
+
   try {
-    const mod = await import('/esm/lv/presentation/hyperframesLauncher.mjs');
-    const res = mod.launchHyperframesPresentation({
+    const [launcherMod, evidenceMod] = await Promise.all([
+      import('/esm/lv/presentation/hyperframesLauncher.mjs'),
+      import('/esm/lv/presentation/evidenceCollector.mjs')
+    ]);
+
+    const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
+    const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings);
+
+    const res = launcherMod.launchHyperframesPresentation({
       context,
       source: context?.source || undefined,
       debug,
       includeTrace: debug && !!(opts.includeTrace ?? window.__elvieHyperIncludeTrace),
+      evidenceMap
     });
     if (!res.ok) {
       showRpError(res.message || 'Could not launch presentation.');
@@ -16681,6 +16694,8 @@ async function launchHyperframesPresentation(opts = {}) {
   } catch (e) {
     showRpError('Presentation module failed to load: ' + (e?.message || e));
     return { ok: false, reason: 'module_load_failed', message: String(e?.message || e) };
+  } finally {
+    if (btn) btn.textContent = prevBtnText;
   }
 }
 window.launchHyperframesPresentation = launchHyperframesPresentation;

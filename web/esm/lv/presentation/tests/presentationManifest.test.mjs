@@ -249,3 +249,93 @@ test('buildHyperframesLaunchUrl encodes the manifest URL as a query param', () =
   assert.ok(url.startsWith(HYPERFRAMES_BASE_URL));
   assert.ok(url.includes('manifest=https%3A%2F%2Fstore.example%2Fm%2Fabc.json'));
 });
+
+// ── sections: positive-only presentation structure ────────────────────────────
+
+test('sections contains only positive findings (negative excluded)', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS });
+  assert.ok(Array.isArray(m.sections), 'sections must be an array');
+  // 2 positive findings → 2 sections
+  assert.equal(m.sections.length, 2);
+  // findings[] still has all 3 (positive + negative)
+  assert.equal(m.findings.length, 3);
+  // negative finding is NOT in sections
+  assert.ok(!m.sections.find(s => s.id === 'acl-intact'), 'negative finding must not appear in sections');
+});
+
+test('each section has required fields including speakerNotes and imageEvidence', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS });
+  for (const key of ['payloadVersion', 'source', 'generatedAt', 'accession', 'presentationTitle', 'studyLabel', 'sections', 'findings', 'reportContext']) {
+    assert.ok(key in m, `missing top-level field: ${key}`);
+  }
+  for (const s of m.sections) {
+    for (const key of ['id', 'title', 'text', 'accession', 'navigable', 'navigationStatus', 'speakerNotes', 'imageEvidence']) {
+      assert.ok(key in s, `section missing field: ${key}`);
+    }
+    assert.ok(Array.isArray(s.imageEvidence));
+  }
+});
+
+test('navigable section speakerNotes includes location', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS });
+  const nav = m.sections.find(s => s.id === 'medial-meniscus-tear');
+  assert.ok(nav, 'navigable section must be present');
+  assert.ok(nav.speakerNotes.includes('Series 6'), 'speakerNotes must mention series');
+  assert.ok(nav.speakerNotes.includes('Image 23'), 'speakerNotes must mention image');
+  assert.ok(nav.speakerNotes.includes('Medial meniscus tear'), 'speakerNotes must include finding label');
+});
+
+test('non-navigable section speakerNotes omits location', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS });
+  const nonNav = m.sections.find(s => s.id === 'chondromalacia-patella');
+  assert.ok(nonNav, 'non-navigable positive section must be present');
+  assert.equal(nonNav.navigable, false);
+  assert.ok(!nonNav.speakerNotes.includes('Series'), 'no series location for non-navigable');
+  assert.ok(nonNav.speakerNotes.includes('No specific image location'), 'must note absence of location');
+});
+
+test('presentationTitle and studyLabel are derived from accession', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS });
+  assert.equal(m.studyLabel, '3852755662087132');
+  assert.ok(m.presentationTitle.includes('3852755662087132'), 'title must include accession');
+  assert.ok(typeof m.presentationTitle === 'string' && m.presentationTitle.length > 0);
+});
+
+test('reportContext.sectionCount matches positive finding count', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS });
+  assert.equal(m.reportContext.sectionCount, 2); // 2 positive findings
+  assert.equal(m.sections.length, 2);
+});
+
+test('evidenceMap populates imageEvidence on matching sections', () => {
+  const fakeEvidence = { type: 'viewport-capture', findingId: 'medial-meniscus-tear', status: 'captured', dataUrl: 'data:image/png;base64,FAKE' };
+  const evidenceMap = new Map([['medial-meniscus-tear', [fakeEvidence]]]);
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS, evidenceMap });
+  const nav = m.sections.find(s => s.id === 'medial-meniscus-tear');
+  assert.deepEqual(nav.imageEvidence, [fakeEvidence]);
+  // section with no evidence entry gets empty array
+  const nonNav = m.sections.find(s => s.id === 'chondromalacia-patella');
+  assert.deepEqual(nonNav.imageEvidence, []);
+});
+
+test('evidenceMap is ignored when not a Map instance', () => {
+  const m = buildPresentationManifest(makeContext(), { generatedAt: FIXED_TS, evidenceMap: {} });
+  for (const s of m.sections) {
+    assert.deepEqual(s.imageEvidence, []);
+  }
+});
+
+test('launcher passes evidenceMap through to the manifest', () => {
+  const evidence = { type: 'viewport-capture', findingId: 'medial-meniscus-tear', status: 'no_viewer' };
+  const evidenceMap = new Map([['medial-meniscus-tear', [evidence]]]);
+  const res = launchHyperframesPresentation({
+    context: makeContext(),
+    generatedAt: FIXED_TS,
+    evidenceMap,
+    publishManifest: () => 'blob:test',
+    openWindow: () => null
+  });
+  assert.equal(res.ok, true);
+  const nav = res.manifest.sections.find(s => s.id === 'medial-meniscus-tear');
+  assert.deepEqual(nav.imageEvidence, [evidence]);
+});
