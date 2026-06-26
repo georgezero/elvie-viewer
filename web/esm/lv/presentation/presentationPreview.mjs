@@ -93,7 +93,21 @@ function transportNoteHtml(manifestUrl) {
     ${esc(msg)}</div>`;
 }
 
-function slideHtml(manifest, section, idx, total, { manifestUrl, hasExport, hasLaunch }) {
+function mp4StatusHtml(videoUrl) {
+  if (videoUrl) {
+    return `<div data-testid="preview-mp4-link"
+      style="font-size:12px;margin-top:8px;">
+      <a href="${esc(videoUrl)}" target="_blank" rel="noopener"
+         style="color:#4ade80;text-decoration:none;">&#9654; Watch rendered MP4</a>
+    </div>`;
+  }
+  return `<div data-testid="preview-mp4-status"
+    style="font-size:11px;color:#44445a;margin-top:8px;">
+    MP4 not generated &mdash; run <code style="color:#6b7280;">npm run render:hyperframes:ct-head</code>
+  </div>`;
+}
+
+function slideHtml(manifest, section, idx, total, { manifestUrl, videoUrl, hasExport, hasLaunch }) {
   const loc = section.navigable
     ? `<div data-testid="preview-location"
         style="font-size:12px;color:#7ab8f5;margin-bottom:10px;">
@@ -185,10 +199,11 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, hasExport, hasL
   </div>
   ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
+  ${mp4StatusHtml(videoUrl)}
 </div>`;
 }
 
-function emptyHtml(manifest, { manifestUrl, hasExport, hasLaunch }) {
+function emptyHtml(manifest, { manifestUrl, videoUrl, hasExport, hasLaunch }) {
   const launchBtn = hasLaunch
     ? `<button data-testid="preview-launch-btn"
         style="background:#1e3a8a;border:1px solid #2d4fa8;color:#93c5fd;
@@ -224,6 +239,7 @@ function emptyHtml(manifest, { manifestUrl, hasExport, hasLaunch }) {
   </div>
   ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
+  ${mp4StatusHtml(videoUrl)}
 </div>`;
 }
 
@@ -238,8 +254,9 @@ function emptyHtml(manifest, { manifestUrl, hasExport, hasLaunch }) {
  * @param {function} [options.onLaunch]    - called when "Open in Hyperframes" is clicked
  * @param {function} [options.onExport]    - called when "Export JSON" is clicked
  * @param {string}   [options.manifestUrl] - published manifest URL for transport status note
+ * @param {string}   [options.videoUrl]    - served MP4 URL, if already rendered
  */
-export function openPresentationPreview(manifest, { onLaunch, onExport, manifestUrl } = {}) {
+export function openPresentationPreview(manifest, { onLaunch, onExport, manifestUrl, videoUrl } = {}) {
   closePresentationPreview();
 
   const sections = Array.isArray(manifest?.sections) ? manifest.sections : [];
@@ -252,7 +269,7 @@ export function openPresentationPreview(manifest, { onLaunch, onExport, manifest
     'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.83);' +
     'display:flex;align-items:center;justify-content:center;';
 
-  const ctx = { manifestUrl, hasExport: !!onExport, hasLaunch: !!onLaunch };
+  const ctx = { manifestUrl, videoUrl, hasExport: !!onExport, hasLaunch: !!onLaunch };
 
   function mount() {
     overlay.innerHTML = sections.length

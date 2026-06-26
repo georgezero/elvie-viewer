@@ -581,3 +581,48 @@ test.describe('fetchable manifest preview deck screenshots', () => {
     await screenshot(page, 'fetchable-preview-deck-mr-knee-text-only-slide');
   });
 });
+
+test.describe('MP4 render status in preview deck', () => {
+  // CT Head has a pre-rendered MP4 when `npm run render:hyperframes:ct-head` has been run.
+  // When the MP4 exists (served at /generated/hyperframes/NI9f7ff9/renders/NI9f7ff9.mp4),
+  // the preview shows a watch link. When absent, it shows a status / run-command hint.
+
+  test('CT Head preview shows mp4-status or mp4-link element', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    // Exactly one of mp4-status or mp4-link must be present
+    const statusEl = page.locator('[data-testid="preview-mp4-status"]');
+    const linkEl   = page.locator('[data-testid="preview-mp4-link"]');
+    const statusCount = await statusEl.count();
+    const linkCount   = await linkEl.count();
+    expect(statusCount + linkCount).toBeGreaterThanOrEqual(1);
+
+    if (linkCount > 0) {
+      // MP4 exists — link must point to the served file
+      const href = await linkEl.locator('a').getAttribute('href');
+      expect(href).toMatch(/\/generated\/hyperframes\/NI9f7ff9\/renders\/NI9f7ff9\.mp4/);
+      await screenshot(page, 'ct-head-preview-with-mp4-link');
+    } else {
+      // MP4 not yet rendered — status hint must be visible
+      await expect(statusEl).toBeVisible();
+      await screenshot(page, 'ct-head-preview-with-mp4-status');
+    }
+  });
+
+  test('MR Knee preview shows mp4-status element (no pre-rendered MP4 by default)', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    // MR Knee render is not run by default test setup, so status should be shown.
+    // If it was run, a link is acceptable too — the test just verifies one exists.
+    const statusEl = page.locator('[data-testid="preview-mp4-status"]');
+    const linkEl   = page.locator('[data-testid="preview-mp4-link"]');
+    const count = await statusEl.count() + await linkEl.count();
+    expect(count).toBeGreaterThanOrEqual(1);
+  });
+});

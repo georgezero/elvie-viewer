@@ -16699,11 +16699,24 @@ async function launchHyperframesPresentation(opts = {}) {
       window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ = res.manifest;
     }
 
+    // Check whether a pre-rendered MP4 exists for this accession (written by the
+    // render:hyperframes script). HEAD request costs nothing if the file is absent.
+    const accession = context?.accession;
+    let videoUrl;
+    if (accession) {
+      const mp4Path = `/generated/hyperframes/${encodeURIComponent(accession)}/renders/${encodeURIComponent(accession)}.mp4`;
+      try {
+        const chk = await fetch(mp4Path, { method: 'HEAD' });
+        if (chk.ok) videoUrl = mp4Path;
+      } catch (_) { /* server not serving generated/ or file absent — ignore */ }
+    }
+
     // Show the local preview deck ("Preview Deck"). This is not the Hyperframes
     // experience — it is an Elvie-local view of the prepared manifest.
     // "Open in Hyperframes" in the overlay triggers the actual external launch.
     previewMod.openPresentationPreview(res.manifest, {
       manifestUrl: res.manifestUrl,
+      videoUrl,
       onLaunch: () => {
         if (res.launchUrl) {
           window.open(res.launchUrl, '_blank', 'noopener');
