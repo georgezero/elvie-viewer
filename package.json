@@ -1,0 +1,13 @@
+{
+  "name": "elvie-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:unit": "node --test 'web/esm/**/*.test.mjs'",
+    "test:browser": "npx playwright test",
+    "test": "npm run test:unit && npm run test:browser"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}

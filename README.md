@@ -47,6 +47,29 @@ Set `Case API base URL` in Settings → Case API before use.
 
 The viewer exposes `window.dispatchViewerCommand` for programmatic control from AI agents (OpenClaw, Hermes, Codex, Claude, custom). See [AGENT.md](AGENT.md) for the full command reference, inline playbook schema, and integration notes.
 
+## Tests
+
+**Unit tests** (Node test runner, no server needed):
+
+```bash
+node --test 'web/esm/**/*.test.mjs'
+```
+
+**Browser tests** (Playwright, Chromium):
+
+```bash
+npm install          # first time only
+npx playwright test
+```
+
+Screenshots are written to `test-artifacts/hyperframes/` and are not committed.
+
+Playwright starts `python3 -m http.server 4173` from the `web/` directory automatically. If a server is already running on that port, it is reused.
+
+Limitations:
+- The v1 manifest transport uses session-scoped `blob:` URLs (same-origin only). Tests verify the URL shape; actual cross-origin resolution requires a server-side publish step.
+- No DICOM or DICOMweb server is required for browser tests — they use injected mock report contexts.
+
 ## Related
 
 - [elvie-server](../elvie-server) — Orthanc/DICOMweb + Whisper + OHIF via Docker Compose
