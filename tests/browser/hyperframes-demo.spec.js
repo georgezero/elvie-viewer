@@ -506,3 +506,78 @@ async function launchFromPreviewInner(page) {
   await btn.click();
   await page.waitForFunction(() => (window.__capturedLaunchUrls?.length ?? 0) > 0, { timeout: 6000 });
 }
+
+// ── Phase 5: fetchable manifest / preview deck named screenshots ───────────────
+// Produces the six canonical screenshots documenting the current preview-deck
+// and fetchable-manifest flow.  File names are stable identifiers for the flow,
+// distinct from the generic slide screenshots captured by earlier tests.
+
+test.describe('fetchable manifest preview deck screenshots', () => {
+  test('CT Head: Preview Deck label, slide nav, Export JSON button, launch stub', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    // Slide 1 — caudate infarct, navigable, shows Series/Image location
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('caudate', { ignoreCase: true });
+    await screenshot(page, 'fetchable-preview-deck-ct-head-slide-1');
+
+    // Export JSON button: screenshot the slide panel so the footer buttons are visible
+    await page.locator('[data-testid="preview-export-btn"]').scrollIntoViewIfNeeded();
+    await page.locator('[data-testid="preview-slide"]').screenshot({
+      path: path.join(SHOT_DIR, 'fetchable-preview-deck-export-json-button.png')
+    });
+
+    // Slide 2 — vertex fracture
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('2 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('fracture', { ignoreCase: true });
+    await screenshot(page, 'fetchable-preview-deck-ct-head-slide-2');
+
+    // Click "Open in Hyperframes" — window.open is stubbed, so no real window opens.
+    // Inject a debug banner showing the captured manifest URL for the screenshot.
+    await page.locator('[data-testid="preview-launch-btn"]').click();
+    await page.waitForFunction(() => (window.__capturedLaunchUrls?.length ?? 0) > 0, { timeout: 6000 });
+    await page.evaluate(() => {
+      const raw = window.__capturedLaunchUrls?.[0] || '';
+      const manifestParam = raw ? (() => { try { return new URL(raw).searchParams.get('manifest') || raw; } catch { return raw; } })() : '';
+      const div = Object.assign(document.createElement('div'), {
+        id: 'lv-launch-stub-banner',
+        innerHTML:
+          '<span style="color:#7ab8f5;font-weight:600">window.open stubbed</span>' +
+          ' &nbsp;manifest= <span style="color:#6ee7b7;word-break:break-all">' +
+          manifestParam.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>'
+      });
+      Object.assign(div.style, {
+        position: 'fixed', bottom: '0', left: '0', right: '0', zIndex: '99999',
+        background: '#0a0a1a', borderTop: '1px solid #2d4fa8',
+        padding: '9px 16px', fontFamily: 'monospace', fontSize: '11px',
+        color: '#93c5fd', lineHeight: '1.6'
+      });
+      document.body.appendChild(div);
+    });
+    await screenshot(page, 'external-launch-url-or-popup-stub-state');
+  });
+
+  test('MR Knee: slide 1 navigable and slide 3 text-only named screenshots', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    // Slide 1 — meniscus tear, navigable
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('meniscus', { ignoreCase: true });
+    await screenshot(page, 'fetchable-preview-deck-mr-knee-slide-1');
+
+    // Navigate to slide 3 — chondromalacia patella, text-only (non-navigable)
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('3 / 3');
+    await expect(page.locator('[data-testid="preview-non-navigable-badge"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-evidence-placeholder"]')).toBeVisible();
+    await screenshot(page, 'fetchable-preview-deck-mr-knee-text-only-slide');
+  });
+});
