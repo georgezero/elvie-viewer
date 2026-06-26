@@ -6,8 +6,12 @@
     "test:unit": "node --test 'web/esm/**/*.test.mjs'",
     "test:browser": "npx playwright test",
     "test": "npm run test:unit && npm run test:browser",
+    "export:hyperframes:ct-head": "node scripts/export-hyperframes-evidence.mjs ct-head",
+    "export:hyperframes:mr-knee": "node scripts/export-hyperframes-evidence.mjs mr-knee",
     "render:hyperframes:ct-head": "node scripts/render-hyperframes-video.mjs ct-head",
-    "render:hyperframes:mr-knee": "node scripts/render-hyperframes-video.mjs mr-knee"
+    "render:hyperframes:mr-knee": "node scripts/render-hyperframes-video.mjs mr-knee",
+    "build:hyperframes:ct-head": "npm run export:hyperframes:ct-head && npm run render:hyperframes:ct-head",
+    "build:hyperframes:mr-knee": "npm run export:hyperframes:mr-knee && npm run render:hyperframes:mr-knee"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

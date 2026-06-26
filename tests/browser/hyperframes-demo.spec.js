@@ -626,3 +626,59 @@ test.describe('MP4 render status in preview deck', () => {
     expect(count).toBeGreaterThanOrEqual(1);
   });
 });
+
+test.describe('CT Head exported evidence package', () => {
+  // These tests validate the output of `npm run export:hyperframes:ct-head`.
+  // They run against files on disk — no browser load needed.
+  // They are skipped if the package has not been generated yet.
+
+  const pkgDir     = path.join(__dirname, '../../web/generated/hyperframes/NI9f7ff9');
+  const manifestPath = path.join(pkgDir, 'presentation.json');
+  const assetsDir  = path.join(pkgDir, 'assets');
+  const mp4Path    = path.join(pkgDir, 'renders/NI9f7ff9.mp4');
+
+  test.skip(!fs.existsSync(manifestPath), 'presentation.json not yet generated — run npm run export:hyperframes:ct-head');
+
+  test('presentation.json has sections with imageEvidence asset paths', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    expect(manifest.payloadVersion).toBe('presentation-manifest-v1');
+    expect(manifest.accession).toBe('NI9f7ff9');
+    expect(Array.isArray(manifest.sections)).toBe(true);
+    expect(manifest.sections.length).toBeGreaterThan(0);
+
+    const captured = manifest.sections.filter(s =>
+      s.imageEvidence?.some(e => e.status === 'captured' && e.assetPath)
+    );
+    expect(captured.length).toBeGreaterThan(0);
+
+    for (const section of captured) {
+      const ev = section.imageEvidence.find(e => e.status === 'captured' && e.assetPath);
+      expect(ev.assetPath).toMatch(/^assets\/finding-\d+\.png$/);
+      // No data URLs should remain (they are replaced with asset paths during export)
+      expect(ev.dataUrl).toBeUndefined();
+    }
+  });
+
+  test('exported PNG assets exist and are non-zero', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const assetNames = manifest.sections
+      .flatMap(s => s.imageEvidence ?? [])
+      .filter(e => e.status === 'captured' && e.assetPath)
+      .map(e => e.assetPath.replace(/^assets\//, ''));
+
+    expect(assetNames.length).toBeGreaterThan(0);
+
+    for (const name of assetNames) {
+      const assetPath = path.join(assetsDir, name);
+      expect(fs.existsSync(assetPath), `Asset missing: ${assetPath}`).toBe(true);
+      const size = fs.statSync(assetPath).size;
+      expect(size, `Asset empty: ${name}`).toBeGreaterThan(1000);
+    }
+  });
+
+  test('rendered MP4 exists and is non-zero', () => {
+    test.skip(!fs.existsSync(mp4Path), 'MP4 not yet generated — run npm run render:hyperframes:ct-head');
+    const size = fs.statSync(mp4Path).size;
+    expect(size).toBeGreaterThan(50_000); // at least 50 KB
+  });
+});

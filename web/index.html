@@ -9385,7 +9385,10 @@ function loadConfig() {
   state.viewerBaseUrl = viewer || '';
   state.caseApiBaseUrl = (localStorage.getItem('lv_elvie_case_api_url') || '').replace(/\/$/, '');
   state.enableUrlCaseLaunch = localStorage.getItem('lv_elvie_url_case_launch') !== '0';
-  state.dicomWebBaseUrl = (dicomWeb != null ? dicomWeb : '/orthanc/dicom-web').replace(/\/$/, '');
+  const _dicomWebFallback = window.location.hostname === 'elvie-hyper.viby.ad'
+    ? 'https://elvie-server.ggg.ad/dicom-web'
+    : '/orthanc/dicom-web';
+  state.dicomWebBaseUrl = (dicomWeb != null ? dicomWeb : _dicomWebFallback).replace(/\/$/, '');
   state.parserModel = parserModel || '';
   state.ocrEnabled = ocrEnabled === '1';
   state.ocrBaseUrl = ocrUrl || '';
@@ -16673,7 +16676,9 @@ async function launchHyperframesPresentation(opts = {}) {
     ]);
 
     const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
-    const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings);
+    const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings, {
+      settleMs: window.__ELVIE_EVIDENCE_SETTLE_MS__ ?? 600
+    });
 
     // Build manifest + publish to a fetchable URL. The SW publisher is used when the
     // service worker is active (registered on page load). Falls back to blob: otherwise.
