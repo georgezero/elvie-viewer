@@ -16665,31 +16665,46 @@ async function launchHyperframesPresentation(opts = {}) {
   if (btn) btn.textContent = 'PREPARING…';
 
   try {
-    const [launcherMod, evidenceMod] = await Promise.all([
+    const [launcherMod, evidenceMod, previewMod] = await Promise.all([
       import('/esm/lv/presentation/hyperframesLauncher.mjs'),
-      import('/esm/lv/presentation/evidenceCollector.mjs')
+      import('/esm/lv/presentation/evidenceCollector.mjs'),
+      import('/esm/lv/presentation/presentationPreview.mjs')
     ]);
 
     const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
     const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings);
 
+    // Build manifest + blob URL without auto-opening the external window.
+    // The user triggers the external launch from inside the preview.
     const res = launcherMod.launchHyperframesPresentation({
       context,
       source: context?.source || undefined,
       debug,
       includeTrace: debug && !!(opts.includeTrace ?? window.__elvieHyperIncludeTrace),
-      evidenceMap
+      evidenceMap,
+      openWindow: () => null
     });
     if (!res.ok) {
       showRpError(res.message || 'Could not launch presentation.');
-    } else {
-      hideRpError();
+      return res;
     }
+    hideRpError();
+
     // Test hook: expose the last generated manifest for browser test inspection.
     // Never active unless window.__ELVIE_TEST__ is explicitly set by the test harness.
     if (window.__ELVIE_TEST__ && res?.manifest) {
       window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ = res.manifest;
     }
+
+    // Show the local preview deck; external Hyperframes launch is the user's choice.
+    previewMod.openPresentationPreview(res.manifest, {
+      onLaunch: () => {
+        if (res.launchUrl) {
+          window.open(res.launchUrl, '_blank', 'noopener');
+        }
+      }
+    });
+
     return res;
   } catch (e) {
     showRpError('Presentation module failed to load: ' + (e?.message || e));

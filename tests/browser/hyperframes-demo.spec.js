@@ -68,12 +68,25 @@ async function stubWindowOpen(page) {
 async function clickPresentAndWait(page) {
   await stubWindowOpen(page);
   await page.locator('#rpPresentBtn').click();
-  // Wait for launch (async import + manifest generation + window.open or error)
+  // Wait for preview to open OR error banner to show
   await page.waitForFunction(
-    () => (window.__capturedLaunchUrls?.length > 0) ||
+    () => !!document.querySelector('[data-testid="presentation-preview"]') ||
           document.getElementById('rpErrorBanner')?.classList.contains('visible'),
     { timeout: 12_000 }
   );
+  // If preview opened, trigger external launch so tests can check the URL
+  const hasPreview = await page.evaluate(
+    () => !!document.querySelector('[data-testid="presentation-preview"]')
+  );
+  if (hasPreview) {
+    const launchBtn = page.locator('[data-testid="preview-launch-btn"]');
+    await launchBtn.waitFor({ state: 'visible', timeout: 3000 });
+    await launchBtn.click();
+    await page.waitForFunction(
+      () => (window.__capturedLaunchUrls?.length ?? 0) > 0,
+      { timeout: 6000 }
+    );
+  }
 }
 
 async function getCapturedUrls(page) {
@@ -360,3 +373,122 @@ test.describe('MR Knee demo report', () => {
     await screenshot(page, 'mr-knee-launch-navigable');
   });
 });
+
+// ── Phase 4: preview deck navigation ─────────────────────────────────────────
+// Tests that assert the preview overlay renders correctly and slide navigation
+// works for both demo studies.
+
+async function clickPresentWaitForPreview(page) {
+  await page.locator('#rpPresentBtn').click();
+  await page.waitForFunction(
+    () => !!document.querySelector('[data-testid="presentation-preview"]') ||
+          document.getElementById('rpErrorBanner')?.classList.contains('visible'),
+    { timeout: 12_000 }
+  );
+  // Assert preview opened (not an error)
+  const hasPreview = await page.evaluate(() => !!document.querySelector('[data-testid="presentation-preview"]'));
+  expect(hasPreview, 'preview must open after PRESENT click').toBe(true);
+}
+
+test.describe('CT Head presentation preview', () => {
+  test('preview opens with 2 slides, navigation works, screenshots captured', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    const preview = page.locator('[data-testid="presentation-preview"]');
+    await expect(preview).toBeVisible();
+
+    // Slide 1: chronic-left-caudate-infarct
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('caudate', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Series 2');
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Image 21');
+    // Prev is disabled on first slide
+    await expect(page.locator('[data-testid="preview-prev-btn"]')).toBeDisabled();
+    // Evidence area is present (status varies)
+    await expect(page.locator('[data-testid="preview-evidence-area"]')).toBeVisible();
+
+    await screenshot(page, 'ct-head-preview-slide-1');
+
+    // Navigate to slide 2: healed-left-vertex-fracture
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('2 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('fracture', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Series 2');
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Image 36');
+    // Next is disabled on last slide
+    await expect(page.locator('[data-testid="preview-next-btn"]')).toBeDisabled();
+
+    await screenshot(page, 'ct-head-preview-slide-2');
+
+    // Navigate back to slide 1
+    await page.locator('[data-testid="preview-prev-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
+
+    // External launch from preview
+    await launchFromPreviewInner(page);
+    const urls = await getCapturedUrls(page);
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
+    expect(urls[0]).toContain('manifest=');
+  });
+});
+
+test.describe('MR Knee presentation preview', () => {
+  test('preview shows 3 slides, chondromalacia is text-only, navigation works', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    const preview = page.locator('[data-testid="presentation-preview"]');
+    await expect(preview).toBeVisible();
+
+    // Slide 1: medial-meniscus-tear (navigable)
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('meniscus', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toBeVisible();
+    // No text-only badge on navigable slide
+    await expect(page.locator('[data-testid="preview-non-navigable-badge"]')).not.toBeVisible();
+
+    await screenshot(page, 'mr-knee-preview-slide-1');
+
+    // Slide 2: joint-effusion (navigable)
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('2 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('effusion', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toBeVisible();
+
+    // Slide 3: chondromalacia-patella (non-navigable, text-only)
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('3 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('chondromalacia', { ignoreCase: true });
+    // Text-only badge must appear
+    await expect(page.locator('[data-testid="preview-non-navigable-badge"]')).toBeVisible();
+    // Evidence placeholder (not an img) for text-only slide
+    await expect(page.locator('[data-testid="preview-evidence-placeholder"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-evidence-img"]')).not.toBeVisible();
+    // Next is disabled on last slide
+    await expect(page.locator('[data-testid="preview-next-btn"]')).toBeDisabled();
+
+    await screenshot(page, 'mr-knee-preview-text-only-slide');
+
+    // External launch from preview
+    await launchFromPreviewInner(page);
+    const urls = await getCapturedUrls(page);
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
+  });
+});
+
+// Triggers "Open in Hyperframes" from inside an already-open preview.
+async function launchFromPreviewInner(page) {
+  const btn = page.locator('[data-testid="preview-launch-btn"]');
+  await btn.waitFor({ state: 'visible', timeout: 3000 });
+  await btn.click();
+  await page.waitForFunction(() => (window.__capturedLaunchUrls?.length ?? 0) > 0, { timeout: 6000 });
+}
