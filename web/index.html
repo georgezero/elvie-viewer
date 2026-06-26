@@ -16672,6 +16672,11 @@ async function launchHyperframesPresentation(opts = {}) {
     } else {
       hideRpError();
     }
+    // Test hook: expose the last generated manifest for browser test inspection.
+    // Never active unless window.__ELVIE_TEST__ is explicitly set by the test harness.
+    if (window.__ELVIE_TEST__ && res?.manifest) {
+      window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ = res.manifest;
+    }
     return res;
   } catch (e) {
     showRpError('Presentation module failed to load: ' + (e?.message || e));
