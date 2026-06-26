@@ -3538,6 +3538,7 @@
         </select>
         <button class="btn btn-ghost rp-paste-btn" id="rpPasteBtn" onclick="toggleRpPasteForm()" title="Paste and parse a report" style="font-size:10px;padding:3px 8px;">PASTE</button>
         <button class="btn btn-ghost rp-upload-btn" id="rpUploadBtn" onclick="toggleRpUploadForm()" title="Upload and preprocess report file" style="font-size:10px;padding:3px 8px;">UPLOAD</button>
+        <button class="btn btn-ghost rp-present-btn" id="rpPresentBtn" onclick="launchHyperframesPresentation()" title="Launch a Hyperframes presentation from this report" style="font-size:10px;padding:3px 8px;">PRESENT</button>
       </div>
       <div class="report-panel-meta" id="rpMeta" style="display:none;">
         <div class="report-panel-meta-inner" id="rpMetaInner"></div>
@@ -16650,6 +16651,35 @@ async function _autoLoadNativeViewer(accession) {
 }
 
 window.openAgentxReport = openAgentxReport;
+
+// ── Hyperframes presentation launch ───────────────────────────────────────────
+// Thin glue: read the active report context, delegate manifest building + launch
+// to the isolated presentation adapter, and surface guardrail messages in the
+// report panel. No manifest logic lives here.
+async function launchHyperframesPresentation(opts = {}) {
+  const context = (typeof getActiveReportContext === 'function') ? getActiveReportContext() : null;
+  const debug = !!(opts.debug ?? window.__elvieHyperDebug);
+  try {
+    const mod = await import('/esm/lv/presentation/hyperframesLauncher.mjs');
+    const res = mod.launchHyperframesPresentation({
+      context,
+      source: context?.source || undefined,
+      debug,
+      includeTrace: debug && !!(opts.includeTrace ?? window.__elvieHyperIncludeTrace),
+    });
+    if (!res.ok) {
+      showRpError(res.message || 'Could not launch presentation.');
+    } else {
+      hideRpError();
+    }
+    return res;
+  } catch (e) {
+    showRpError('Presentation module failed to load: ' + (e?.message || e));
+    return { ok: false, reason: 'module_load_failed', message: String(e?.message || e) };
+  }
+}
+window.launchHyperframesPresentation = launchHyperframesPresentation;
+
 // Expose queue token for tests (read-only getter so tests see live value)
 Object.defineProperty(window, '_rpAudioQueueToken', { get: () => _rpAudioQueueToken });
 
