@@ -16665,23 +16665,26 @@ async function launchHyperframesPresentation(opts = {}) {
   if (btn) btn.textContent = 'PREPARING…';
 
   try {
-    const [launcherMod, evidenceMod, previewMod] = await Promise.all([
+    const [launcherMod, evidenceMod, previewMod, publisherMod] = await Promise.all([
       import('/esm/lv/presentation/hyperframesLauncher.mjs'),
       import('/esm/lv/presentation/evidenceCollector.mjs'),
-      import('/esm/lv/presentation/presentationPreview.mjs')
+      import('/esm/lv/presentation/presentationPreview.mjs'),
+      import('/esm/lv/presentation/manifestPublisher.mjs')
     ]);
 
     const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
     const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings);
 
-    // Build manifest + blob URL without auto-opening the external window.
-    // The user triggers the external launch from inside the preview.
+    // Build manifest + publish to a fetchable URL. The SW publisher is used when the
+    // service worker is active (registered on page load). Falls back to blob: otherwise.
+    // The user triggers the external launch from inside the preview deck.
     const res = launcherMod.launchHyperframesPresentation({
       context,
       source: context?.source || undefined,
       debug,
       includeTrace: debug && !!(opts.includeTrace ?? window.__elvieHyperIncludeTrace),
       evidenceMap,
+      publishManifest: (manifest) => publisherMod.publishManifest(manifest),
       openWindow: () => null
     });
     if (!res.ok) {
@@ -16696,13 +16699,17 @@ async function launchHyperframesPresentation(opts = {}) {
       window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ = res.manifest;
     }
 
-    // Show the local preview deck; external Hyperframes launch is the user's choice.
+    // Show the local preview deck ("Preview Deck"). This is not the Hyperframes
+    // experience — it is an Elvie-local view of the prepared manifest.
+    // "Open in Hyperframes" in the overlay triggers the actual external launch.
     previewMod.openPresentationPreview(res.manifest, {
+      manifestUrl: res.manifestUrl,
       onLaunch: () => {
         if (res.launchUrl) {
           window.open(res.launchUrl, '_blank', 'noopener');
         }
-      }
+      },
+      onExport: () => publisherMod.downloadManifest(res.manifest)
     });
 
     return res;
@@ -16717,6 +16724,11 @@ window.launchHyperframesPresentation = launchHyperframesPresentation;
 
 // Expose queue token for tests (read-only getter so tests see live value)
 Object.defineProperty(window, '_rpAudioQueueToken', { get: () => _rpAudioQueueToken });
+
+// Register the manifest service worker early so it is active before the user
+// clicks PRESENT. The SW serves /lv-manifest/{id}.json from memory with CORS,
+// replacing the session-scoped blob: URL fallback used before SW activation.
+import('/esm/lv/presentation/manifestPublisher.mjs').then(m => m.registerManifestWorker()).catch(() => {});
 
 void Promise.all([
   import('/esm/lv/sync/pointSync.mjs'),

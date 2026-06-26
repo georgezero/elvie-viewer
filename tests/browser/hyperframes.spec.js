@@ -85,6 +85,12 @@ async function loadPage(page) {
     else document.querySelector('.app')?.classList.add('report-open');
   });
   await page.locator('#rpPresentBtn').waitFor({ state: 'visible', timeout: 5000 });
+  // Ensure service worker is controlling the page so publishManifest returns
+  // a fetchable http: URL rather than falling back to a blob: URL.
+  await page.waitForFunction(
+    () => !('serviceWorker' in navigator) || !!navigator.serviceWorker.controller,
+    { timeout: 8000 }
+  );
 }
 
 async function stubWindowOpen(page) {
@@ -256,7 +262,7 @@ test.describe('Hyperframes PRESENT integration', () => {
     expect(captured[0]).toContain('manifest=');
   });
 
-  test('T5 — manifest URL contains a blob: reference (stable URL, not inline payload)', async ({ page }) => {
+  test('T5 — manifest URL is a fetchable service-worker URL, not a blob: reference', async ({ page }) => {
     await loadPage(page);
 
     await page.evaluate((ctx) => { window.setActiveReportContext(ctx); }, NAV_CONTEXT);
@@ -270,8 +276,18 @@ test.describe('Hyperframes PRESENT integration', () => {
     const launchUrl = new URL(captured[0]);
     const manifestParam = launchUrl.searchParams.get('manifest');
     expect(manifestParam).toBeTruthy();
-    expect(manifestParam).toMatch(/^blob:/);
+    // Must not be a session-scoped blob: URL
+    expect(manifestParam).not.toMatch(/^blob:/);
+    // Must be a real http URL served by the local dev server via service worker
+    expect(manifestParam).toMatch(/^http:\/\/localhost/);
     expect(launchUrl.origin).toBe(HYPERFRAMES_ORIGIN);
+
+    // Verify the manifest URL is actually fetchable and returns valid JSON
+    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestParam);
+    expect(fetched.payloadVersion).toBe('presentation-manifest-v1');
+    expect(fetched.accession).toBe(NAV_CONTEXT.accession);
+
+    await screenshot(page, '06-t5-fetchable-manifest');
   });
 
 });

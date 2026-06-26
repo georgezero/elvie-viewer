@@ -13,9 +13,11 @@
 //   NI9f7ff9   (CT Head)   — 2 navigable findings (Series 2 Image 21, Series 2 Image 36)
 //   3852755662087132 (MR Knee) — 2 navigable findings + 1 non-navigable positive
 //
-// Known limitation: v1 manifest transport uses session-scoped blob: URLs.
-// The manifest= param carries a blob: reference visible in the captured URL;
-// Hyperframes cannot fetch it cross-origin until a server-side publish step is added.
+// Manifest transport: the service worker at /lv-manifest-worker.js intercepts
+// GET /lv-manifest/{id}.json and serves the manifest from memory with CORS.
+// This produces a fetchable localhost URL, not a session-scoped blob: URL.
+// Remote servers (hyperframes.heygen.com) still cannot reach localhost URLs;
+// a cloud-storage publish step is needed for that handoff.
 
 import { test, expect } from '@playwright/test';
 import path from 'path';
@@ -37,6 +39,12 @@ async function loadPage(page) {
   // Enable test hook before any PRESENT click
   await page.evaluate(() => { window.__ELVIE_TEST__ = true; });
   await page.locator('#rpPresentBtn').waitFor({ state: 'visible', timeout: 8000 });
+  // Wait for service worker to take control so publishManifest returns a
+  // fetchable http: URL rather than falling back to a blob: URL.
+  await page.waitForFunction(
+    () => !('serviceWorker' in navigator) || !!navigator.serviceWorker.controller,
+    { timeout: 8000 }
+  );
 }
 
 async function loadDemoReport(page, accession) {
@@ -327,11 +335,17 @@ test.describe('MR Knee demo report', () => {
     expect(chondro.nonNavigableReason).toBeTruthy();
     expect(chondro.imageAnchors).toEqual([]);
 
-    // manifest URL transport: blob ref, not inline payload
+    // manifest URL transport: service-worker URL, not a session-scoped blob: ref
     const launchUrl = new URL(urls[0]);
-    expect(launchUrl.searchParams.get('manifest')).toMatch(/^blob:/);
+    const manifestParam = launchUrl.searchParams.get('manifest');
+    expect(manifestParam).not.toMatch(/^blob:/);
+    expect(manifestParam).toMatch(/^http/);
     // The launch URL itself must not contain the manifest payload inline
     expect(urls[0]).not.toContain('payloadVersion');
+    // The manifest URL must be fetchable and return the correct JSON
+    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestParam);
+    expect(fetched.payloadVersion).toBe('presentation-manifest-v1');
+    expect(fetched.accession).toBe('3852755662087132');
 
     for (const f of manifest.findings) {
       assertFindingStructure(f, { expectedAccession: '3852755662087132' });
