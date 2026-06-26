@@ -68,16 +68,16 @@ Playwright starts `python3 -m http.server 4173` from the `web/` directory automa
 
 Limitations:
 - No DICOM or DICOMweb server is required for browser tests — they use injected mock report contexts or the seeded demo reports.
-- Image evidence (`imageEvidence` in each manifest section) is collected by navigating to each positive finding and capturing the active Cornerstone canvas via `canvas.toDataURL()`. Without a DICOMweb server, canvases are blank and evidence records carry an explicit status (`no_viewer`, `no_canvas`, or `skipped_non_navigable`) rather than a data URL. The manifest is still valid and Hyperframes-launchable; the status fields let the consumer decide how to handle missing visuals.
+- Image evidence (`imageEvidence` in each manifest section) is collected by navigating to each positive finding and capturing the active Cornerstone canvas via `canvas.toDataURL()`. Without a DICOMweb server, canvases are blank and evidence records carry an explicit status (`no_viewer`, `no_canvas`, or `skipped_non_navigable`) rather than a data URL. The manifest is still valid and exportable; the status fields let the consumer decide how to handle missing visuals.
 
-## Hyperframes presentation export
+## Presentation export (Preview Deck)
 
 Clicking **PRESENT** on a loaded report:
 1. Collects image evidence from the viewer (Cornerstone canvas capture per positive finding)
 2. Builds a `presentation-manifest-v1` JSON object with sections, speaker notes, and evidence
-3. Publishes the manifest to a fetchable local URL via the service worker at `/lv-manifest-worker.js`
+3. Publishes the manifest to a local URL via the service worker at `/lv-manifest-worker.js`
 4. Opens the **Preview Deck** — an Elvie-local slide view of the prepared manifest
-5. **"Open in Hyperframes ↗"** inside the Preview Deck triggers the actual external Hyperframes launch
+5. **"Open external Hyperframes ↗"** inside the Preview Deck constructs a launch URL — see status below
 
 ### What works locally
 
@@ -86,28 +86,44 @@ Clicking **PRESENT** on a loaded report:
 - The manifest URL is fetchable by any http client on the same machine (browser tests, curl)
 - **"Export JSON ↓"** downloads the full manifest as `lv-presentation-{accession}.json` — includes all sections, speaker notes, and base64-encoded image evidence
 
-### What is still blocked
+### External HyperFrames integration — status: unverified / product mismatch
 
-- `localhost` URLs are not reachable from `hyperframes.heygen.com` servers
-- The "Open in Hyperframes" button passes a `manifest=http://localhost:...` query param that Hyperframes cannot fetch from the public internet
-- Resolution: replace `publishManifest` in `manifestPublisher.mjs` with a cloud-storage upload step (S3 pre-signed URL, GCS, etc.) that returns an `https://` URL
+Manual verification (2026-06-26) shows that **HyperFrames** (`hyperframes.heygen.com`) is an
+open-source **HTML-to-MP4 video composition CLI** framework, not a slide deck web application:
 
-### How to inspect a manifest manually
+- `hyperframes.heygen.com` shows its own marketing page and ignores all query parameters
+- There is no `/present` route or `manifest=` JSON URL parameter support
+- HyperFrames renders HTML compositions to video via `npx hyperframes render`
+  and is designed for AI agents writing HTML/CSS/JS, not for consuming JSON manifests
+- The `presentation-manifest-v1` JSON format used here is not compatible with
+  HyperFrames' native HTML composition format
+
+**The "Open external Hyperframes" button is therefore non-functional at this stage.**
+It opens `hyperframes.heygen.com` with a `manifest=` parameter that is silently ignored.
+
+What would be needed to resolve this:
+1. Identify whether HyperFrames has (or will have) a slide-rendering web endpoint that accepts JSON
+2. OR: generate a HyperFrames HTML composition from the manifest and run `npx hyperframes render`
+   to produce an MP4 video of the presentation
+3. OR: replace HyperFrames with a different external presentation target that accepts the manifest format
+4. In any case: replace the localhost manifest URL with a cloud-hosted `https://` URL
+
+The local Preview Deck is fully functional and is the primary output of the PRESENT flow.
+
+### How to inspect the exported manifest
 
 ```bash
-# After clicking PRESENT, the manifest URL appears in the browser console or
-# can be captured by clicking "Export JSON" in the Preview Deck.
-
-# Or fetch it directly (while the tab is still open):
+# Click "Export JSON" in the Preview Deck, or fetch directly while the tab is open:
 curl http://localhost:4173/lv-manifest/<id>.json | python3 -m json.tool
 ```
 
-### How to test external launch manually
+### Manual external verification
 
-1. Click **PRESENT** in the viewer
-2. In the Preview Deck, right-click **"Open in Hyperframes ↗"** → Copy Link
-3. Replace `http://localhost:4173/lv-manifest/...` in the `manifest=` query param with an `https://` URL hosting the exported JSON
-4. Open the modified URL in a browser
+```bash
+# Run the external verification test (requires HYPERFRAMES_EXTERNAL=1):
+HYPERFRAMES_EXTERNAL=1 npx playwright test tests/manual/ --config=playwright.manual.config.js
+# Screenshots are written to test-artifacts/hyperframes/external/
+```
 
 ## Related
 

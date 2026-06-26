@@ -60,20 +60,36 @@ function navBtn(testid, label, disabled) {
     ${disabled ? 'disabled' : ''}>${esc(label)}</button>`;
 }
 
+// Integration status note — always shown.
+// HyperFrames (hyperframes.heygen.com) is an HTML-to-video CLI framework;
+// it ignores the manifest= parameter and has no slide rendering endpoint.
+const INTEGRATION_STATUS_NOTE =
+  '⚠️ External handoff unverified — HyperFrames (hyperframes.heygen.com) ' +
+  'is an HTML-to-video CLI tool and does not accept a manifest= JSON URL. ' +
+  'Use “Export JSON” to inspect or forward the prepared manifest.';
+
+function integrationStatusHtml() {
+  return `<div data-testid="preview-integration-status"
+    style="font-size:11px;color:#92400e;background:#1c0f00;border:1px solid #78350f;
+           border-radius:4px;padding:7px 10px;margin-top:10px;line-height:1.55;">
+    ${esc(INTEGRATION_STATUS_NOTE)}
+  </div>`;
+}
+
 function transportNoteHtml(manifestUrl) {
   if (!manifestUrl) return '';
   let msg;
   if (/^blob:/.test(manifestUrl)) {
-    msg = 'Transport: session-scoped blob URL — not fetchable cross-origin.';
+    msg = 'Manifest: session-scoped blob URL — not fetchable cross-origin.';
   } else if (/^https?:\/\/(localhost|127\.0\.0\.1)/.test(manifestUrl)) {
-    msg = 'Hyperframes export prepared. External rendering requires fetchable hosted assets.';
+    msg = 'Manifest: hosted at localhost via service worker (not reachable from the public internet).';
   } else if (/^https:/.test(manifestUrl)) {
-    msg = 'Manifest published at a publicly fetchable HTTPS URL.';
+    msg = 'Manifest: published at a publicly fetchable HTTPS URL.';
   } else {
     return '';
   }
   return `<div data-testid="preview-transport-note"
-    style="font-size:11px;color:#4a4a62;margin-top:10px;line-height:1.5;">
+    style="font-size:11px;color:#4a4a62;margin-top:6px;line-height:1.5;">
     ${esc(msg)}</div>`;
 }
 
@@ -102,7 +118,7 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, hasExport, hasL
     ? `<button data-testid="preview-launch-btn"
         style="background:#1e3a8a;border:1px solid #2d4fa8;color:#93c5fd;
                border-radius:4px;padding:6px 16px;cursor:pointer;font-size:13px;">
-        Open in Hyperframes &#8599;
+        Open external Hyperframes &#8599;
        </button>`
     : '';
   const exportBtn = hasExport
@@ -167,6 +183,7 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, hasExport, hasL
     </div>
     ${launchBtn}
   </div>
+  ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
 </div>`;
 }
@@ -205,6 +222,7 @@ function emptyHtml(manifest, { manifestUrl, hasExport, hasLaunch }) {
     ${exportBtn}
     ${launchBtn}
   </div>
+  ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
 </div>`;
 }

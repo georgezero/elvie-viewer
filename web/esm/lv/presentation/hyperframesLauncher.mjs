@@ -2,13 +2,29 @@
 //
 // This is the ONLY presentation module that is Hyperframes-aware. It consumes a
 // generic PresentationManifest (see presentationManifest.mjs), publishes it to a
-// stable URL, and opens Hyperframes pointed at that URL.
+// stable URL, and constructs a launch URL pointing at HYPERFRAMES_BASE_URL.
+//
+// ⚠ INTEGRATION STATUS — UNVERIFIED (as of 2026-06-26):
+//
+// hyperframes.heygen.com is the documentation/marketing site for HyperFrames,
+// an open-source HTML-to-MP4 video composition CLI framework.  It is NOT a
+// slide deck web application and does NOT accept a ?manifest=<url> parameter.
+// When opened with the current launch URL, the site shows its own homepage and
+// ignores all query parameters.
+//
+// Blocked on:
+//   1. A confirmed API endpoint or slide-rendering route on hyperframes.heygen.com
+//   2. A Hyperframes-compatible manifest format (they use HTML compositions, not JSON)
+//   3. A public https:// manifest URL (localhost manifests are unreachable externally)
+//
+// The PresentationManifest format (presentation-manifest-v1 JSON) is intentionally
+// generic — it is not tied to HyperFrames specifically. The local Preview Deck in
+// presentationPreview.mjs provides a functional local rendering path regardless of
+// external integration status.
 //
 // Transport model: a stable manifest URL, not a large inline query payload.
-// In v1 the manifest is published to an in-session object (blob) URL — no server
-// round-trip — and Hyperframes is opened with `?manifest=<url>`. All external
-// dependencies (manifest builder, publisher, window opener) are injectable so the
-// adapter stays deterministic and testable.
+// All external dependencies (manifest builder, publisher, window opener) are injectable
+// so the adapter remains deterministic and testable.
 
 import {
   buildPresentationManifest,
