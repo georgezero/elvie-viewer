@@ -33,8 +33,33 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 
+// Must match the durations in htmlPresentationExporter.mjs.
+const INTRO_DURATION_S = 2;
+const SLIDE_DURATION_S = 7;
+
 const { exportHtmlComposition } =
   await import(`${ROOT}/web/esm/lv/presentation/htmlPresentationExporter.mjs`);
+
+// Heuristic: does an extracted MP4 frame contain a real CT image (vs the dark
+// "No image captured" placeholder)? We crop the right ~62% of the frame (where
+// the image panel lives), downscale to a tiny grayscale buffer, and measure the
+// fraction of pixels brighter than the mid-gray cutoff (90). A real CT image —
+// skull ring plus mid-gray brain tissue — measures ~0.12; the placeholder panel
+// (all colours below ~70 luma) measures ~0.00, giving a wide separation.
+async function frameContainsImage(framePath) {
+  const ff = spawnSync('ffmpeg', [
+    '-i', framePath,
+    '-vf', 'crop=in_w*0.62:in_h:in_w*0.38:0,scale=80:45,format=gray',
+    '-f', 'rawvideo', '-',
+  ], { maxBuffer: 1 << 20, timeout: 30_000 });
+  if (ff.status !== 0 || !ff.stdout || ff.stdout.length === 0) return null;
+  const px = ff.stdout;
+  let bright = 0;
+  for (let i = 0; i < px.length; i++) if (px[i] > 90) bright++;
+  const fraction = bright / px.length;
+  // Real CT frames measured ~0.12; placeholder ~0.00. Threshold 0.03 = ~4× margin.
+  return fraction > 0.03;
+}
 
 // ── Config map: name → accession ───────────────────────────────────────────────
 const TARGETS = {
@@ -106,11 +131,32 @@ if ((manifest.sections?.length ?? 0) === 0) {
 }
 
 // ── 2. Export HTML composition ─────────────────────────────────────────────────
+// Embed exported PNG evidence as inline data: URLs (assetMode "data-url").
+// This is the most reliable path for the HyperFrames CLI render: the image
+// bytes travel inside the HTML, so there is no dependency on the renderer's
+// file server root, cwd, or relative-path resolution.
 
-const html = exportHtmlComposition(manifest, { projectDir });
+let embeddedAssets = 0;
+const readAsset = (assetPath) => {
+  const abs = resolve(projectDir, assetPath);
+  if (!existsSync(abs)) {
+    console.warn(`  ! evidence asset missing on disk: ${abs}`);
+    return null;
+  }
+  const bytes = readFileSync(abs);
+  embeddedAssets++;
+  return `data:image/png;base64,${bytes.toString('base64')}`;
+};
+
+const html = exportHtmlComposition(manifest, {
+  projectDir,
+  assetMode: 'data-url',
+  readAsset,
+});
 const indexPath = resolve(projectDir, 'index.html');
 writeFileSync(indexPath, html, 'utf8');
 console.log(`\nComposition:  ${indexPath}`);
+console.log(`Embedded evidence images (inline data URLs): ${embeddedAssets}`);
 
 writeFileSync(resolve(projectDir, 'meta.json'), JSON.stringify({
   id: accession, name: manifest.presentationTitle, targetName, accession,
@@ -123,31 +169,55 @@ writeFileSync(resolve(projectDir, 'hyperframes.json'), JSON.stringify({
   paths: { blocks: 'compositions', components: 'compositions/components', assets: 'assets' },
 }, null, 2));
 
-// ── 3. Screenshot of composition before render (optional, non-fatal) ───────────
+// ── 3. Pre-render verification: screenshot the EXACT HTML to be rendered ────────
+// We open the same index.html file HyperFrames will consume, seek the GSAP
+// timeline to the middle of slide 1, screenshot it, and check that the CT image
+// element actually loaded (naturalWidth > 0). If the image is missing here it
+// will be missing in the MP4 too — fail fast rather than render a broken video.
 
+const debugDir = resolve(projectDir, 'debug');
 const shotDir  = resolve(ROOT, 'test-artifacts', 'hyperframes');
-const shotPath = resolve(shotDir, `composition-${accession}.png`);
+mkdirSync(debugDir, { recursive: true });
 mkdirSync(shotDir, { recursive: true });
+
+const renderInputShot = resolve(debugDir, 'render-input-slide-1.png');
+const compositionShot = resolve(shotDir, `composition-${accession}.png`);
+const SLIDE1_MID = INTRO_DURATION_S + SLIDE_DURATION_S / 2; // middle of slide 1
+
+let inputImageOk = false;
 try {
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true });
   const page    = await (await browser.newContext({ viewport: { width: 1920, height: 1080 } })).newPage();
   await page.goto(`file://${indexPath}`);
   await page.waitForTimeout(800);
-  // Seek to middle of slide 1 so the screenshot shows real content, not opacity:0 initial state.
-  // Intro = 2s, slide = 7s each → middle of slide 1 = 2 + 3.5 = 5.5s
-  const slideSeekTime = 5.5;
   await page.evaluate((t) => {
-    const timelines = window.__timelines || {};
-    const tl = Object.values(timelines)[0];
+    const tl = Object.values(window.__timelines || {})[0];
     if (tl && typeof tl.seek === 'function') tl.seek(t);
-  }, slideSeekTime);
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: shotPath, fullPage: false });
+  }, SLIDE1_MID);
+  await page.waitForTimeout(300);
+
+  // Verify the slide-1 CT <img> actually decoded.
+  inputImageOk = await page.evaluate(() => {
+    const slide = document.querySelector('#clip-slide-0');
+    if (!slide) return false;
+    const img = slide.querySelector('img');
+    return !!img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
+  });
+
+  await page.screenshot({ path: renderInputShot, fullPage: false });
+  await page.screenshot({ path: compositionShot, fullPage: false });
   await browser.close();
-  console.log(`Composition screenshot: ${shotPath}`);
+  console.log(`Render-input screenshot:  ${renderInputShot}`);
+  console.log(`Slide-1 image decoded:    ${inputImageOk ? 'YES' : 'NO'}`);
 } catch (e) {
-  console.log(`(Composition screenshot skipped: ${e.message})`);
+  console.log(`(Render-input verification skipped: ${e.message})`);
+}
+
+if (!inputImageOk && embeddedAssets > 0) {
+  console.error('\nABORT: evidence was embedded but the slide-1 image did not decode in the render input.');
+  console.error('The MP4 would not contain the CT image. Inspect:', renderInputShot);
+  process.exit(2);
 }
 
 // ── 4. Run HyperFrames render ──────────────────────────────────────────────────
@@ -155,7 +225,8 @@ try {
 const outputPath = resolve(rendersDir, `${accession}.mp4`);
 const hfBin      = resolve(ROOT, 'node_modules', '.bin', 'hyperframes');
 
-console.log(`\nRendering (${manifest.sections.length * 6 + 2}s composition at 30fps)…\n`);
+const totalDuration = INTRO_DURATION_S + manifest.sections.length * SLIDE_DURATION_S;
+console.log(`\nRendering (${totalDuration}s composition at 30fps)…\n`);
 
 const result = spawnSync(
   hfBin,
@@ -170,10 +241,35 @@ if (exitCode !== 0) {
   process.exit(exitCode);
 }
 
-// ── 5. Write render metadata ───────────────────────────────────────────────────
-
 const mp4Exists = existsSync(outputPath);
 const mp4Bytes  = mp4Exists ? readFileSync(outputPath).byteLength : 0;
+
+// ── 5. Post-render verification: extract a frame from the MP4 ───────────────────
+// Pull a frame from the middle of slide 1 and run a simple content heuristic:
+// the CT image occupies the right ~64% of the frame against a near-black panel,
+// so a real frame has many bright (grayscale) pixels there. A placeholder-only
+// frame is almost entirely dark. We sample the right half and count bright pixels.
+
+const renderedFrameShot = resolve(debugDir, 'rendered-frame-1.png');
+let frameHasImage = null; // null = could not determine
+if (mp4Exists) {
+  try {
+    const ff = spawnSync('ffmpeg',
+      ['-y', '-ss', String(SLIDE1_MID), '-i', outputPath, '-frames:v', '1', renderedFrameShot],
+      { encoding: 'utf8', timeout: 60_000 });
+    if (ff.status === 0 && existsSync(renderedFrameShot)) {
+      frameHasImage = await frameContainsImage(renderedFrameShot);
+      console.log(`\nRendered frame:           ${renderedFrameShot}`);
+      console.log(`Frame contains CT image:  ${frameHasImage ? 'YES' : 'NO (placeholder-like)'}`);
+    } else {
+      console.log(`(Frame extraction failed: ${ff.stderr?.split('\n').slice(-2).join(' ') || 'unknown'})`);
+    }
+  } catch (e) {
+    console.log(`(Frame extraction skipped: ${e.message})`);
+  }
+}
+
+// ── 6. Write render metadata ───────────────────────────────────────────────────
 
 writeFileSync(resolve(projectDir, 'render.json'), JSON.stringify({
   target: targetName, accession,
@@ -181,16 +277,32 @@ writeFileSync(resolve(projectDir, 'render.json'), JSON.stringify({
   presentationTitle: manifest.presentationTitle,
   sectionCount: manifest.sections.length,
   evidenceSource,
+  assetMode: 'data-url',
+  embeddedAssets,
   compositionPath: indexPath,
+  renderInputScreenshot: renderInputShot,
+  renderInputImageDecoded: inputImageOk,
   outputPath,
+  renderedFrameScreenshot: existsSync(renderedFrameShot) ? renderedFrameShot : null,
+  renderedFrameContainsImage: frameHasImage,
   renderedAt: new Date().toISOString(),
   mp4SizeKB: mp4Exists ? Math.round(mp4Bytes / 1024) : null,
 }, null, 2));
 
-// ── 6. Report ──────────────────────────────────────────────────────────────────
+// ── 7. Report ──────────────────────────────────────────────────────────────────
 
 console.log('\n=== Render complete ===');
-console.log(`Evidence:     ${evidenceSource}`);
-console.log(`Composition:  ${indexPath}`);
-console.log(`MP4:          ${outputPath} (${mp4Exists ? (mp4Bytes / 1024).toFixed(0) + ' KB' : 'NOT FOUND'})`);
-console.log(`\nServed at:    http://localhost:4173/generated/hyperframes/${accession}/renders/${accession}.mp4`);
+console.log(`Evidence:        ${evidenceSource}`);
+console.log(`Embedded images: ${embeddedAssets} (inline data URLs)`);
+console.log(`Composition:     ${indexPath}`);
+console.log(`Render input:    ${renderInputShot} (image decoded: ${inputImageOk ? 'YES' : 'NO'})`);
+console.log(`MP4:             ${outputPath} (${mp4Exists ? (mp4Bytes / 1024).toFixed(0) + ' KB' : 'NOT FOUND'})`);
+if (existsSync(renderedFrameShot)) {
+  console.log(`Rendered frame:  ${renderedFrameShot} (CT image present: ${frameHasImage ? 'YES' : 'NO'})`);
+}
+console.log(`\nServed at:       http://localhost:4173/generated/hyperframes/${accession}/renders/${accession}.mp4`);
+
+if (frameHasImage === false) {
+  console.error('\nWARNING: rendered frame appears to be placeholder-only (no CT image detected).');
+  process.exit(3);
+}

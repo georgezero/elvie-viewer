@@ -29,7 +29,6 @@ const SHOT_DIR = path.join(__dirname, '../../test-artifacts/hyperframes');
 fs.mkdirSync(SHOT_DIR, { recursive: true });
 
 const PAGE_URL = '/index.html';
-const HYPERFRAMES_ORIGIN = 'https://hyperframes.heygen.com';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +73,6 @@ async function stubWindowOpen(page) {
 }
 
 async function clickPresentAndWait(page) {
-  await stubWindowOpen(page);
   await page.locator('#rpPresentBtn').click();
   // Wait for preview to open OR error banner to show
   await page.waitForFunction(
@@ -82,27 +80,19 @@ async function clickPresentAndWait(page) {
           document.getElementById('rpErrorBanner')?.classList.contains('visible'),
     { timeout: 12_000 }
   );
-  // If preview opened, trigger external launch so tests can check the URL
-  const hasPreview = await page.evaluate(
-    () => !!document.querySelector('[data-testid="presentation-preview"]')
-  );
-  if (hasPreview) {
-    const launchBtn = page.locator('[data-testid="preview-launch-btn"]');
-    await launchBtn.waitFor({ state: 'visible', timeout: 3000 });
-    await launchBtn.click();
-    await page.waitForFunction(
-      () => (window.__capturedLaunchUrls?.length ?? 0) > 0,
-      { timeout: 6000 }
-    );
-  }
-}
-
-async function getCapturedUrls(page) {
-  return page.evaluate(() => window.__capturedLaunchUrls || []);
 }
 
 async function getManifest(page) {
   return page.evaluate(() => window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ || null);
+}
+
+// Read the published (fetchable) manifest URL exposed by the test hook.
+async function getPublishedManifestUrl(page) {
+  await page.waitForFunction(
+    () => typeof window.__ELVIE_TEST_LAST_MANIFEST_URL__ === 'string',
+    { timeout: 6000 }
+  );
+  return page.evaluate(() => window.__ELVIE_TEST_LAST_MANIFEST_URL__);
 }
 
 async function screenshot(page, name) {
@@ -175,12 +165,10 @@ test.describe('CXR demo report', () => {
 
     await clickPresentAndWait(page);
 
-    // CXR has no navigable image anchors → non-navigable launch (no error, just opens)
-    const urls = await getCapturedUrls(page);
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
-    expect(urls[0]).toContain('manifest=');
-    expect(urls[0]).toContain('source=elvie-viewer');
+    // CXR has no navigable image anchors → preview opens in non-navigable mode.
+    // The manifest is still published to a fetchable localhost URL.
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
 
     const manifest = await getManifest(page);
     expect(manifest).not.toBeNull();
@@ -218,10 +206,8 @@ test.describe('CT Head demo report', () => {
     await clickPresentAndWait(page);
     await screenshot(page, 'ct-head-evidence-captured');
 
-    const urls = await getCapturedUrls(page);
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
-    expect(urls[0]).toContain('manifest=');
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
 
     const manifest = await getManifest(page);
     expect(manifest).not.toBeNull();
@@ -298,10 +284,8 @@ test.describe('MR Knee demo report', () => {
     await clickPresentAndWait(page);
     await screenshot(page, 'mr-knee-evidence-captured');
 
-    const urls = await getCapturedUrls(page);
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
-    expect(urls[0]).toContain('manifest=');
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
 
     const manifest = await getManifest(page);
     expect(manifest).not.toBeNull();
@@ -336,14 +320,9 @@ test.describe('MR Knee demo report', () => {
     expect(chondro.imageAnchors).toEqual([]);
 
     // manifest URL transport: service-worker URL, not a session-scoped blob: ref
-    const launchUrl = new URL(urls[0]);
-    const manifestParam = launchUrl.searchParams.get('manifest');
-    expect(manifestParam).not.toMatch(/^blob:/);
-    expect(manifestParam).toMatch(/^http/);
-    // The launch URL itself must not contain the manifest payload inline
-    expect(urls[0]).not.toContain('payloadVersion');
+    expect(manifestUrl).not.toMatch(/^blob:/);
     // The manifest URL must be fetchable and return the correct JSON
-    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestParam);
+    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestUrl);
     expect(fetched.payloadVersion).toBe('presentation-manifest-v1');
     expect(fetched.accession).toBe('3852755662087132');
 
@@ -442,12 +421,9 @@ test.describe('CT Head presentation preview', () => {
     await page.locator('[data-testid="preview-prev-btn"]').click();
     await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
 
-    // External launch from preview
-    await launchFromPreviewInner(page);
-    const urls = await getCapturedUrls(page);
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
-    expect(urls[0]).toContain('manifest=');
+    // Export action present; no external launch button.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
   });
 });
 
@@ -491,21 +467,11 @@ test.describe('MR Knee presentation preview', () => {
 
     await screenshot(page, 'mr-knee-preview-text-only-slide');
 
-    // External launch from preview
-    await launchFromPreviewInner(page);
-    const urls = await getCapturedUrls(page);
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain(HYPERFRAMES_ORIGIN);
+    // Export action present; no external launch button.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
   });
 });
-
-// Triggers "Open in Hyperframes" from inside an already-open preview.
-async function launchFromPreviewInner(page) {
-  const btn = page.locator('[data-testid="preview-launch-btn"]');
-  await btn.waitFor({ state: 'visible', timeout: 3000 });
-  await btn.click();
-  await page.waitForFunction(() => (window.__capturedLaunchUrls?.length ?? 0) > 0, { timeout: 6000 });
-}
 
 // ── Phase 5: fetchable manifest / preview deck named screenshots ───────────────
 // Produces the six canonical screenshots documenting the current preview-deck
@@ -513,10 +479,9 @@ async function launchFromPreviewInner(page) {
 // distinct from the generic slide screenshots captured by earlier tests.
 
 test.describe('fetchable manifest preview deck screenshots', () => {
-  test('CT Head: Preview Deck label, slide nav, Export JSON button, launch stub', async ({ page }) => {
+  test('CT Head: Preview Deck label, slide nav, Export package button, manifest URL', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, 'NI9f7ff9');
-    await stubWindowOpen(page);
     await clickPresentWaitForPreview(page);
 
     // Slide 1 — caudate infarct, navigable, shows Series/Image location
@@ -524,10 +489,10 @@ test.describe('fetchable manifest preview deck screenshots', () => {
     await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('caudate', { ignoreCase: true });
     await screenshot(page, 'fetchable-preview-deck-ct-head-slide-1');
 
-    // Export JSON button: screenshot the slide panel so the footer buttons are visible
+    // Export package button: screenshot the slide panel so the footer buttons are visible
     await page.locator('[data-testid="preview-export-btn"]').scrollIntoViewIfNeeded();
     await page.locator('[data-testid="preview-slide"]').screenshot({
-      path: path.join(SHOT_DIR, 'fetchable-preview-deck-export-json-button.png')
+      path: path.join(SHOT_DIR, 'fetchable-preview-deck-export-package-button.png')
     });
 
     // Slide 2 — vertex fracture
@@ -536,35 +501,31 @@ test.describe('fetchable manifest preview deck screenshots', () => {
     await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('fracture', { ignoreCase: true });
     await screenshot(page, 'fetchable-preview-deck-ct-head-slide-2');
 
-    // Click "Open in Hyperframes" — window.open is stubbed, so no real window opens.
-    // Inject a debug banner showing the captured manifest URL for the screenshot.
-    await page.locator('[data-testid="preview-launch-btn"]').click();
-    await page.waitForFunction(() => (window.__capturedLaunchUrls?.length ?? 0) > 0, { timeout: 6000 });
-    await page.evaluate(() => {
-      const raw = window.__capturedLaunchUrls?.[0] || '';
-      const manifestParam = raw ? (() => { try { return new URL(raw).searchParams.get('manifest') || raw; } catch { return raw; } })() : '';
+    // Inject a debug banner showing the published (fetchable) manifest URL.
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
+    await page.evaluate((url) => {
       const div = Object.assign(document.createElement('div'), {
-        id: 'lv-launch-stub-banner',
+        id: 'lv-manifest-url-banner',
         innerHTML:
-          '<span style="color:#7ab8f5;font-weight:600">window.open stubbed</span>' +
-          ' &nbsp;manifest= <span style="color:#6ee7b7;word-break:break-all">' +
-          manifestParam.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>'
+          '<span style="color:#7ab8f5;font-weight:600">published manifest URL</span>' +
+          ' &nbsp;<span style="color:#6ee7b7;word-break:break-all">' +
+          String(url).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>'
       });
       Object.assign(div.style, {
         position: 'fixed', bottom: '0', left: '0', right: '0', zIndex: '99999',
-        background: '#0a0a1a', borderTop: '1px solid #2d4fa8',
+        background: '#0a0a1a', borderTop: '1px solid #1f6b3a',
         padding: '9px 16px', fontFamily: 'monospace', fontSize: '11px',
         color: '#93c5fd', lineHeight: '1.6'
       });
       document.body.appendChild(div);
-    });
-    await screenshot(page, 'external-launch-url-or-popup-stub-state');
+    }, manifestUrl);
+    await screenshot(page, 'published-manifest-url-state');
   });
 
   test('MR Knee: slide 1 navigable and slide 3 text-only named screenshots', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, '3852755662087132');
-    await stubWindowOpen(page);
     await clickPresentWaitForPreview(page);
 
     // Slide 1 — meniscus tear, navigable
@@ -601,8 +562,8 @@ test.describe('MP4 render status in preview deck', () => {
     expect(statusCount + linkCount).toBeGreaterThanOrEqual(1);
 
     if (linkCount > 0) {
-      // MP4 exists — link must point to the served file
-      const href = await linkEl.locator('a').getAttribute('href');
+      // MP4 exists — the link (an <a> with the testid) points to the served file
+      const href = await linkEl.getAttribute('href');
       expect(href).toMatch(/\/generated\/hyperframes\/NI9f7ff9\/renders\/NI9f7ff9\.mp4/);
       await screenshot(page, 'ct-head-preview-with-mp4-link');
     } else {
@@ -636,8 +597,12 @@ test.describe('CT Head exported evidence package', () => {
   const manifestPath = path.join(pkgDir, 'presentation.json');
   const assetsDir  = path.join(pkgDir, 'assets');
   const mp4Path    = path.join(pkgDir, 'renders/NI9f7ff9.mp4');
+  const debugDir   = path.join(pkgDir, 'debug');
+  const renderInputShot = path.join(debugDir, 'render-input-slide-1.png');
+  const renderedFrameShot = path.join(debugDir, 'rendered-frame-1.png');
+  const renderMetaPath = path.join(pkgDir, 'render.json');
 
-  test.skip(!fs.existsSync(manifestPath), 'presentation.json not yet generated — run npm run export:hyperframes:ct-head');
+  test.skip(!fs.existsSync(manifestPath), 'presentation.json not yet generated — run npm run build:hyperframes:ct-head');
 
   test('presentation.json has sections with imageEvidence asset paths', () => {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -677,8 +642,31 @@ test.describe('CT Head exported evidence package', () => {
   });
 
   test('rendered MP4 exists and is non-zero', () => {
-    test.skip(!fs.existsSync(mp4Path), 'MP4 not yet generated — run npm run render:hyperframes:ct-head');
+    test.skip(!fs.existsSync(mp4Path), 'MP4 not yet generated — run npm run build:hyperframes:ct-head');
     const size = fs.statSync(mp4Path).size;
     expect(size).toBeGreaterThan(50_000); // at least 50 KB
+  });
+
+  test('render-input screenshot exists, is non-zero, and the slide image decoded', () => {
+    test.skip(!fs.existsSync(renderMetaPath), 'render.json not yet generated — run npm run render:hyperframes:ct-head');
+    expect(fs.existsSync(renderInputShot), `missing ${renderInputShot}`).toBe(true);
+    expect(fs.statSync(renderInputShot).size).toBeGreaterThan(5000);
+    const meta = JSON.parse(fs.readFileSync(renderMetaPath, 'utf8'));
+    // The exact HTML passed to HyperFrames had a decoded CT image.
+    expect(meta.renderInputImageDecoded).toBe(true);
+    expect(meta.assetMode).toBe('data-url');
+    expect(meta.embeddedAssets).toBeGreaterThan(0);
+  });
+
+  test('rendered-frame screenshot exists and is not placeholder-only', () => {
+    test.skip(!fs.existsSync(renderMetaPath), 'render.json not yet generated — run npm run render:hyperframes:ct-head');
+    const meta = JSON.parse(fs.readFileSync(renderMetaPath, 'utf8'));
+    // ffmpeg may be unavailable in some CI environments; only assert when a
+    // frame was actually extracted and analysed.
+    test.skip(meta.renderedFrameContainsImage == null, 'ffmpeg frame extraction unavailable');
+    expect(fs.existsSync(renderedFrameShot), `missing ${renderedFrameShot}`).toBe(true);
+    expect(fs.statSync(renderedFrameShot).size).toBeGreaterThan(5000);
+    // The extracted MP4 frame visibly contains the CT image (not the placeholder).
+    expect(meta.renderedFrameContainsImage).toBe(true);
   });
 });

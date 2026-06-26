@@ -3538,7 +3538,7 @@
         </select>
         <button class="btn btn-ghost rp-paste-btn" id="rpPasteBtn" onclick="toggleRpPasteForm()" title="Paste and parse a report" style="font-size:10px;padding:3px 8px;">PASTE</button>
         <button class="btn btn-ghost rp-upload-btn" id="rpUploadBtn" onclick="toggleRpUploadForm()" title="Upload and preprocess report file" style="font-size:10px;padding:3px 8px;">UPLOAD</button>
-        <button class="btn btn-ghost rp-present-btn" id="rpPresentBtn" onclick="launchHyperframesPresentation()" title="Launch a Hyperframes presentation from this report" style="font-size:10px;padding:3px 8px;">PRESENT</button>
+        <button class="btn btn-ghost rp-present-btn" id="rpPresentBtn" onclick="launchHyperframesPresentation()" title="Build a presentation deck from this report (render to MP4 with the HyperFrames CLI)" style="font-size:10px;padding:3px 8px;">PRESENT</button>
       </div>
       <div class="report-panel-meta" id="rpMeta" style="display:none;">
         <div class="report-panel-meta-inner" id="rpMetaInner"></div>
@@ -16698,10 +16698,11 @@ async function launchHyperframesPresentation(opts = {}) {
     }
     hideRpError();
 
-    // Test hook: expose the last generated manifest for browser test inspection.
-    // Never active unless window.__ELVIE_TEST__ is explicitly set by the test harness.
+    // Test hooks: expose the last generated manifest and its published URL for
+    // browser test inspection. Never active unless window.__ELVIE_TEST__ is set.
     if (window.__ELVIE_TEST__ && res?.manifest) {
       window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ = res.manifest;
+      window.__ELVIE_TEST_LAST_MANIFEST_URL__ = res.manifestUrl || null;
     }
 
     // Check whether a pre-rendered MP4 exists for this accession (written by the
@@ -16716,17 +16717,12 @@ async function launchHyperframesPresentation(opts = {}) {
       } catch (_) { /* server not serving generated/ or file absent — ignore */ }
     }
 
-    // Show the local preview deck ("Preview Deck"). This is not the Hyperframes
-    // experience — it is an Elvie-local view of the prepared manifest.
-    // "Open in Hyperframes" in the overlay triggers the actual external launch.
+    // Show the local preview deck ("Preview Deck"). The deck is rendered to MP4
+    // by the HyperFrames CLI — there is no external launch. The user can watch a
+    // rendered MP4 (if present) or export the package to render one.
     previewMod.openPresentationPreview(res.manifest, {
       manifestUrl: res.manifestUrl,
       videoUrl,
-      onLaunch: () => {
-        if (res.launchUrl) {
-          window.open(res.launchUrl, '_blank', 'noopener');
-        }
-      },
       onExport: () => publisherMod.downloadManifest(res.manifest)
     });
 

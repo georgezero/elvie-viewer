@@ -70,60 +70,84 @@ Limitations:
 - No DICOM or DICOMweb server is required for browser tests — they use injected mock report contexts or the seeded demo reports.
 - Image evidence (`imageEvidence` in each manifest section) is collected by navigating to each positive finding and capturing the active Cornerstone canvas via `canvas.toDataURL()`. Without a DICOMweb server, canvases are blank and evidence records carry an explicit status (`no_viewer`, `no_canvas`, or `skipped_non_navigable`) rather than a data URL. The manifest is still valid and exportable; the status fields let the consumer decide how to handle missing visuals.
 
-## Presentation export (Preview Deck)
+## Presentation export (Preview Deck → MP4)
 
 Clicking **PRESENT** on a loaded report:
 1. Collects image evidence from the viewer (Cornerstone canvas capture per positive finding)
 2. Builds a `presentation-manifest-v1` JSON object with sections, speaker notes, and evidence
 3. Publishes the manifest to a local URL via the service worker at `/lv-manifest-worker.js`
 4. Opens the **Preview Deck** — an Elvie-local slide view of the prepared manifest
-5. **"Open external Hyperframes ↗"** inside the Preview Deck constructs a launch URL — see status below
+5. Offers two actions: **"Watch rendered MP4"** (if one has been built) and **"Export package ↓"**
+
+There is **no external launch**. The deck becomes a video through the HyperFrames CLI
+(`npx hyperframes render`) — HyperFrames is an HTML-to-MP4 renderer, not a hosted deck
+app. It does not accept a `manifest=` JSON URL.
 
 ### What works locally
 
 - Preview Deck shows all positive findings with text, speaker notes, and any captured images
-- Manifest is served at `http://localhost:4173/lv-manifest/{id}.json` with permissive CORS
-- The manifest URL is fetchable by any http client on the same machine (browser tests, curl)
-- **"Export JSON ↓"** downloads the full manifest as `lv-presentation-{accession}.json` — includes all sections, speaker notes, and base64-encoded image evidence
+- Manifest is served at `http://localhost:4173/lv-manifest/{id}.json` with permissive CORS,
+  fetchable by any http client on the same machine (browser tests, curl)
+- **"Export package ↓"** downloads the full manifest (all sections, speaker notes, base64 image evidence)
+- If a rendered MP4 exists for the accession, the deck links to it (**"Watch rendered MP4"**)
 
-### External HyperFrames integration — status: unverified / product mismatch
+## HyperFrames MP4 render
 
-Manual verification (2026-06-26) shows that **HyperFrames** (`hyperframes.heygen.com`) is an
-open-source **HTML-to-MP4 video composition CLI** framework, not a slide deck web application:
+The true flow is entirely local:
 
-- `hyperframes.heygen.com` shows its own marketing page and ignores all query parameters
-- There is no `/present` route or `manifest=` JSON URL parameter support
-- HyperFrames renders HTML compositions to video via `npx hyperframes render`
-  and is designed for AI agents writing HTML/CSS/JS, not for consuming JSON manifests
-- The `presentation-manifest-v1` JSON format used here is not compatible with
-  HyperFrames' native HTML composition format
+```
+Elvie viewer  →  browser evidence export  →  HTML composition  →  npx hyperframes render  →  MP4  →  link in Preview Deck
+```
 
-**The "Open external Hyperframes" button is therefore non-functional at this stage.**
-It opens `hyperframes.heygen.com` with a `manifest=` parameter that is silently ignored.
-
-What would be needed to resolve this:
-1. Identify whether HyperFrames has (or will have) a slide-rendering web endpoint that accepts JSON
-2. OR: generate a HyperFrames HTML composition from the manifest and run `npx hyperframes render`
-   to produce an MP4 video of the presentation
-3. OR: replace HyperFrames with a different external presentation target that accepts the manifest format
-4. In any case: replace the localhost manifest URL with a cloud-hosted `https://` URL
-
-The local Preview Deck is fully functional and is the primary output of the PRESENT flow.
-
-### How to inspect the exported manifest
+### Build the CT Head video
 
 ```bash
-# Click "Export JSON" in the Preview Deck, or fetch directly while the tab is open:
+# Dev server must be running (serves the viewer the export script drives):
+cd web && python3 -m http.server 4173 &
+
+npm run build:hyperframes:ct-head     # export evidence, then render MP4
+# or run the steps separately:
+npm run export:hyperframes:ct-head    # browser-assisted evidence capture
+npm run render:hyperframes:ct-head    # build HTML + render MP4 + verify
+```
+
+`export:` launches headless Chromium (Playwright), points DICOMweb at
+`https://elvie-server.ggg.ad/dicom-web`, loads the demo report, runs the normal PRESENT
+evidence-capture path, and writes the captured CT images plus a manifest.
+
+`render:` reads that manifest, **embeds each PNG as an inline `data:` URL** inside the
+generated HTML (the most reliable path for the CLI renderer — no file-server/cwd/relative-path
+dependency), screenshots the exact HTML that will be rendered, runs `npx hyperframes render`,
+then extracts a frame from the MP4 and verifies it contains the CT image (not the placeholder).
+
+### Output paths (per accession, `NI9f7ff9` = CT Head)
+
+```
+web/generated/hyperframes/NI9f7ff9/
+  presentation.json                 manifest with assets/finding-N.png references
+  assets/finding-1.png, finding-2.png   captured CT evidence (PNG)
+  index.html                        HyperFrames composition (PNGs embedded as data URLs)
+  renders/NI9f7ff9.mp4              rendered video
+  render.json                       render metadata + verification flags
+  debug/render-input-slide-1.png    screenshot of the exact HTML passed to the renderer
+  debug/rendered-frame-1.png        frame extracted from the MP4 (proves image is present)
+```
+
+`web/generated/` is gitignored — none of these are committed.
+
+### Inspect the exported manifest
+
+```bash
+# "Export package" in the Preview Deck, or fetch directly while the tab is open:
 curl http://localhost:4173/lv-manifest/<id>.json | python3 -m json.tool
 ```
 
-### Manual external verification
+### Limitation
 
-```bash
-# Run the external verification test (requires HYPERFRAMES_EXTERNAL=1):
-HYPERFRAMES_EXTERNAL=1 npx playwright test tests/manual/ --config=playwright.manual.config.js
-# Screenshots are written to test-artifacts/hyperframes/external/
-```
+Real image evidence requires the **browser/DICOM viewer path**: the export step drives the
+live viewer to navigate to each finding and capture the Cornerstone canvas. Running the render
+script alone (without a prior export) falls back to a registry-only manifest with placeholder
+panels instead of CT images.
 
 ## Related
 

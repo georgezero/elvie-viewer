@@ -1,23 +1,25 @@
 // HTML presentation exporter.
 //
 // Converts a PresentationManifest (presentation-manifest-v1) into a
-// self-contained HyperFrames HTML composition.
-//
-// Layout: split-screen, dark medical theme.
-//   Left panel  — finding title, body text, series/image badge, speaker notes
-//   Right panel — captured CT image (or styled placeholder)
-//
-// Image evidence resolution:
-//   evidence.assetPath  → used in HyperFrames CLI renders (relative to project dir)
-//   evidence.dataUrl    → used in browser preview (base64 inline)
-//   Neither             → "No image captured" placeholder
-//
-// Rendering with HyperFrames CLI:
+// self-contained HyperFrames HTML composition for the CLI HTML-to-MP4 renderer:
 //   npx hyperframes render <project-dir>
 //
-// exportHtmlComposition(manifest, { projectDir })
-//   projectDir is optional. When supplied, assetPath evidence is resolved to an
-//   absolute file:// URL so the HyperFrames renderer can read the PNG from disk.
+// Layout: split-screen, dark medical theme (1920×1080).
+//   Left panel  (~36%) — finding title, body text, series/image badge
+//   Right panel (~64%) — captured CT image (or styled placeholder)
+//   Notes bar          — speaker notes pinned to the bottom
+//
+// Image evidence resolution depends on assetMode (see exportHtmlComposition):
+//   "data-url"      — embed the PNG inline as a base64 data: URL (DEFAULT).
+//                     Most reliable for the CLI render: no path/cwd/file-server
+//                     dependency, the image travels inside the HTML itself.
+//   "absolute-file" — file:// absolute path to the PNG on disk.
+//   "relative"      — bare relative path (assets/finding-N.png). Fragile: only
+//                     works if HyperFrames serves the project dir as web root.
+//
+// The module stays free of fs/path imports so it can load in any runtime.
+// For "data-url" mode the caller supplies a readAsset(assetPath) -> dataURL
+// function (the Node render script reads the PNG from disk).
 
 const SLIDE_DURATION  = 7;   // seconds per finding slide
 const INTRO_DURATION  = 2;   // seconds for the title card
@@ -29,22 +31,40 @@ function esc(str) {
 }
 function norm(v) { return String(v == null ? '' : v).trim(); }
 
-// Resolve evidence image: returns a URL string or null.
-function resolveEvidenceUrl(section, projectDir) {
+// Resolve an evidence image to a usable <img src> value, honouring assetMode.
+// Returns a URL string (data:, file://, or relative) or null.
+function resolveEvidenceUrl(section, { assetMode, projectDir, readAsset }) {
   const evArr = Array.isArray(section?.imageEvidence) ? section.imageEvidence : [];
   const captured = evArr.find(e => e?.status === 'captured' && (e?.dataUrl || e?.assetPath));
   if (!captured) return null;
-  if (captured.assetPath) {
-    // HyperFrames CLI render: resolve to absolute file path so the renderer
-    // can load the PNG even when its internal server sets the CWD elsewhere.
-    if (projectDir) {
-      // Use a path relative to the composition — HyperFrames serves the
-      // project dir as its root, so bare relative paths like assets/finding-1.png work.
+
+  // An inline dataUrl always wins when present (browser-preview manifests).
+  if (captured.dataUrl) return captured.dataUrl;
+
+  if (!captured.assetPath) return null;
+
+  switch (assetMode) {
+    case 'data-url':
+      // Embed the PNG bytes directly. Most reliable for the CLI render.
+      if (typeof readAsset === 'function') {
+        const dataUrl = readAsset(captured.assetPath);
+        if (dataUrl) return dataUrl;
+      }
+      // Fall back to a relative path if we could not read the bytes.
       return captured.assetPath;
-    }
-    return captured.assetPath;
+    case 'absolute-file':
+      return projectDir
+        ? `file://${joinPath(projectDir, captured.assetPath)}`
+        : captured.assetPath;
+    case 'relative':
+    default:
+      return captured.assetPath;
   }
-  return captured.dataUrl || null;
+}
+
+// Minimal POSIX-style path join (no path module — keeps this browser-safe).
+function joinPath(base, rel) {
+  return `${String(base).replace(/\/+$/, '')}/${String(rel).replace(/^\/+/, '')}`;
 }
 
 // ── Clip generators ───────────────────────────────────────────────────────────
@@ -72,12 +92,12 @@ function introClip(manifest) {
   </div>`;
 }
 
-function findingClip(section, idx, startTime, projectDir) {
+function findingClip(section, idx, startTime, resolveOpts) {
   const slideId  = `clip-slide-${idx}`;
   const title    = esc(norm(section.title));
   const text     = esc(norm(section.text));
   const notes    = esc(norm(section.speakerNotes));
-  const imgUrl   = resolveEvidenceUrl(section, projectDir);
+  const imgUrl   = resolveEvidenceUrl(section, resolveOpts);
 
   // Series/Image badge
   const locBadge = section.navigable
@@ -137,27 +157,29 @@ function findingClip(section, idx, startTime, projectDir) {
     style="opacity:0;position:absolute;inset:0;
            background:#08080f;
            display:grid;
-           grid-template-columns:480px 1fr;
+           grid-template-columns:36fr 64fr;
            grid-template-rows:1fr;">
 
-    <!-- Left: text panel -->
+    <!-- Left: text panel (~36%) -->
     <div style="display:flex;flex-direction:column;justify-content:center;
-                padding:70px 50px 70px 70px;
+                padding:80px 56px 110px 80px;
                 background:linear-gradient(135deg,#0b0b1a 0%,#0a0a16 100%);
                 border-right:1px solid #111128;">
-      <div style="font-size:11px;color:#1e1e38;text-transform:uppercase;
-                  letter-spacing:.15em;margin-bottom:10px;">
+      <div style="font-size:12px;color:#2a2a48;text-transform:uppercase;
+                  letter-spacing:.18em;margin-bottom:14px;">
         Finding ${idx + 1}</div>
-      <div style="font-size:32px;font-weight:700;color:#ffffff;
-                  line-height:1.2;margin-bottom:16px;">${title}</div>
-      <div style="font-size:16px;color:#6677aa;line-height:1.65;
-                  margin-bottom:24px;">${text}</div>
+      <div style="font-size:42px;font-weight:700;color:#ffffff;
+                  line-height:1.15;margin-bottom:22px;
+                  letter-spacing:-.01em;">${title}</div>
+      <div style="font-size:19px;color:#6677aa;line-height:1.6;
+                  margin-bottom:34px;">${text}</div>
       ${locBadge}
     </div>
 
-    <!-- Right: image panel -->
-    <div style="padding:48px;display:flex;align-items:center;justify-content:center;
-                background:#06060e;">
+    <!-- Right: image panel (~64%) -->
+    <div style="padding:64px 80px 110px 64px;
+                display:flex;align-items:center;justify-content:center;
+                background:radial-gradient(ellipse at center,#0a0a16 0%,#06060e 100%);">
       ${imagePanel}
     </div>
 
@@ -172,18 +194,27 @@ function findingClip(section, idx, startTime, projectDir) {
  *
  * @param {object} manifest     - presentation-manifest-v1 object
  * @param {object} [options]
- * @param {string} [options.projectDir] - absolute path to the HyperFrames project dir;
- *                                        used to resolve assetPath evidence references
+ * @param {string} [options.projectDir] - absolute path to the HyperFrames project dir
+ *                                        (used by "absolute-file" mode)
+ * @param {("data-url"|"relative"|"absolute-file")} [options.assetMode="data-url"]
+ *                                        how to reference exported PNG evidence
+ * @param {function} [options.readAsset] - (assetPath) => dataURL, used by "data-url"
+ *                                        mode to embed PNG bytes inline
  * @returns {string} complete HTML string (write as index.html in the project dir)
  */
-export function exportHtmlComposition(manifest, { projectDir } = {}) {
+export function exportHtmlComposition(manifest, {
+  projectDir,
+  assetMode = 'data-url',
+  readAsset
+} = {}) {
   const sections      = Array.isArray(manifest?.sections) ? manifest.sections : [];
   const totalDuration = INTRO_DURATION + sections.length * SLIDE_DURATION;
   const compositionId = esc(norm(manifest?.accession || 'presentation'));
+  const resolveOpts   = { assetMode, projectDir, readAsset };
 
   const clips = [introClip(manifest)];
   sections.forEach((section, idx) => {
-    clips.push(findingClip(section, idx, INTRO_DURATION + idx * SLIDE_DURATION, projectDir));
+    clips.push(findingClip(section, idx, INTRO_DURATION + idx * SLIDE_DURATION, resolveOpts));
   });
 
   // GSAP timeline: fade each clip in at its start time (elements begin at opacity:0).

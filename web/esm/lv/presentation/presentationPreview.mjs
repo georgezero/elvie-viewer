@@ -1,17 +1,17 @@
 // Local presentation preview overlay — "Preview Deck".
 //
-// Renders a deck-style view from a PresentationManifest. This is an Elvie-local
-// preview — it is NOT the Hyperframes experience. The "Open in Hyperframes"
-// button inside this overlay triggers the actual external Hyperframes launch
-// using the published manifest URL.
+// Renders a deck-style view from a PresentationManifest. The deck is turned into
+// a video by the HyperFrames CLI (npx hyperframes render) — there is NO hosted
+// HyperFrames deck app, so this overlay does not offer an external launch.
+// The actions are: watch the rendered MP4, or export the package for rendering.
 //
 // Each section in manifest.sections becomes one slide. Negative findings are
 // excluded by the manifest builder.
 //
 // Options accepted by openPresentationPreview:
-//   onLaunch(manifestUrl)  — called when user clicks "Open in Hyperframes"
-//   onExport()             — called when user clicks "Export JSON"
-//   manifestUrl            — used to compute and display the transport status note
+//   onExport()    — called when user clicks "Export package"
+//   manifestUrl   — used to compute and display the transport status note
+//   videoUrl      — when set, shows a prominent "Watch rendered MP4" link
 //
 // DOM: fixed overlay on document.body. Keyboard: Escape closes; ← → navigate.
 
@@ -60,17 +60,17 @@ function navBtn(testid, label, disabled) {
     ${disabled ? 'disabled' : ''}>${esc(label)}</button>`;
 }
 
-// Integration status note — always shown.
-// HyperFrames (hyperframes.heygen.com) is an HTML-to-video CLI framework;
-// it ignores the manifest= parameter and has no slide rendering endpoint.
+// Integration note — always shown. Describes the real, CLI-only flow.
+// HyperFrames is an HTML-to-video renderer (npx hyperframes render); there is
+// no hosted deck app and no manifest= URL handoff.
 const INTEGRATION_STATUS_NOTE =
-  '⚠️ External handoff unverified — HyperFrames (hyperframes.heygen.com) ' +
-  'is an HTML-to-video CLI tool and does not accept a manifest= JSON URL. ' +
-  'Use “Export JSON” to inspect or forward the prepared manifest.';
+  'This deck renders to MP4 via the HyperFrames CLI ' +
+  '(npx hyperframes render). HyperFrames is an HTML-to-video tool — there is ' +
+  'no hosted deck app. Export the package, then build the MP4 locally.';
 
 function integrationStatusHtml() {
   return `<div data-testid="preview-integration-status"
-    style="font-size:11px;color:#92400e;background:#1c0f00;border:1px solid #78350f;
+    style="font-size:11px;color:#5b6b8c;background:#0d1320;border:1px solid #1a2740;
            border-radius:4px;padding:7px 10px;margin-top:10px;line-height:1.55;">
     ${esc(INTEGRATION_STATUS_NOTE)}
   </div>`;
@@ -95,19 +95,21 @@ function transportNoteHtml(manifestUrl) {
 
 function mp4StatusHtml(videoUrl) {
   if (videoUrl) {
-    return `<div data-testid="preview-mp4-link"
-      style="font-size:12px;margin-top:8px;">
-      <a href="${esc(videoUrl)}" target="_blank" rel="noopener"
-         style="color:#4ade80;text-decoration:none;">&#9654; Watch rendered MP4</a>
-    </div>`;
+    return `<a data-testid="preview-mp4-link" href="${esc(videoUrl)}"
+      target="_blank" rel="noopener"
+      style="display:inline-flex;align-items:center;gap:8px;margin-top:10px;
+             background:#0b2a16;border:1px solid #1f6b3a;color:#4ade80;
+             border-radius:5px;padding:8px 16px;font-size:13px;font-weight:600;
+             text-decoration:none;">&#9654; Watch rendered MP4</a>`;
   }
   return `<div data-testid="preview-mp4-status"
-    style="font-size:11px;color:#44445a;margin-top:8px;">
-    MP4 not generated &mdash; run <code style="color:#6b7280;">npm run render:hyperframes:ct-head</code>
+    style="font-size:11px;color:#5b6b8c;margin-top:10px;line-height:1.6;">
+    No MP4 yet. Render with HyperFrames CLI:
+    <code style="color:#8aa0c0;background:#0d1320;padding:1px 5px;border-radius:3px;">npm run build:hyperframes:ct-head</code>
   </div>`;
 }
 
-function slideHtml(manifest, section, idx, total, { manifestUrl, videoUrl, hasExport, hasLaunch }) {
+function slideHtml(manifest, section, idx, total, { manifestUrl, videoUrl, hasExport }) {
   const loc = section.navigable
     ? `<div data-testid="preview-location"
         style="font-size:12px;color:#7ab8f5;margin-bottom:10px;">
@@ -128,18 +130,11 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, videoUrl, hasEx
        </div>`
     : '';
 
-  const launchBtn = hasLaunch
-    ? `<button data-testid="preview-launch-btn"
-        style="background:#1e3a8a;border:1px solid #2d4fa8;color:#93c5fd;
-               border-radius:4px;padding:6px 16px;cursor:pointer;font-size:13px;">
-        Open external Hyperframes &#8599;
-       </button>`
-    : '';
   const exportBtn = hasExport
     ? `<button data-testid="preview-export-btn"
-        style="background:#1a1a30;border:1px solid #3a3a54;color:#888;
+        style="background:#1a1a30;border:1px solid #3a3a54;color:#aab;
                border-radius:4px;padding:6px 14px;cursor:pointer;font-size:13px;">
-        Export JSON &#8595;
+        Export package &#8595;
        </button>`
     : '';
 
@@ -193,28 +188,21 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, videoUrl, hasEx
     <div style="display:flex;gap:8px;">
       ${navBtn('preview-prev-btn', '← Prev', idx === 0)}
       ${navBtn('preview-next-btn', 'Next →', idx === total - 1)}
-      ${exportBtn}
     </div>
-    ${launchBtn}
+    ${exportBtn}
   </div>
+  ${mp4StatusHtml(videoUrl)}
   ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
-  ${mp4StatusHtml(videoUrl)}
 </div>`;
 }
 
-function emptyHtml(manifest, { manifestUrl, videoUrl, hasExport, hasLaunch }) {
-  const launchBtn = hasLaunch
-    ? `<button data-testid="preview-launch-btn"
-        style="background:#1e3a8a;border:1px solid #2d4fa8;color:#93c5fd;
-               border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">
-        Open in Hyperframes &#8599;</button>`
-    : '';
+function emptyHtml(manifest, { manifestUrl, videoUrl, hasExport }) {
   const exportBtn = hasExport
     ? `<button data-testid="preview-export-btn"
-        style="background:#1a1a30;border:1px solid #3a3a54;color:#888;
+        style="background:#1a1a30;border:1px solid #3a3a54;color:#aab;
                border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">
-        Export JSON &#8595;</button>`
+        Export package &#8595;</button>`
     : '';
   return `
 <div data-testid="preview-slide" data-slide-index="0"
@@ -235,28 +223,26 @@ function emptyHtml(manifest, { manifestUrl, videoUrl, hasExport, hasLaunch }) {
              border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">
       Close</button>
     ${exportBtn}
-    ${launchBtn}
   </div>
+  ${mp4StatusHtml(videoUrl)}
   ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
-  ${mp4StatusHtml(videoUrl)}
 </div>`;
 }
 
 /**
  * Open the local presentation preview overlay ("Preview Deck").
  *
- * This is an Elvie-local view — NOT the Hyperframes experience.
- * "Open in Hyperframes" inside the overlay triggers the actual external launch.
+ * This is an Elvie-local view. The deck is rendered to MP4 by the HyperFrames
+ * CLI; there is no external launch.
  *
  * @param {object} manifest - PresentationManifest from buildPresentationManifest
  * @param {object} [options]
- * @param {function} [options.onLaunch]    - called when "Open in Hyperframes" is clicked
- * @param {function} [options.onExport]    - called when "Export JSON" is clicked
+ * @param {function} [options.onExport]    - called when "Export package" is clicked
  * @param {string}   [options.manifestUrl] - published manifest URL for transport status note
  * @param {string}   [options.videoUrl]    - served MP4 URL, if already rendered
  */
-export function openPresentationPreview(manifest, { onLaunch, onExport, manifestUrl, videoUrl } = {}) {
+export function openPresentationPreview(manifest, { onExport, manifestUrl, videoUrl } = {}) {
   closePresentationPreview();
 
   const sections = Array.isArray(manifest?.sections) ? manifest.sections : [];
@@ -269,7 +255,7 @@ export function openPresentationPreview(manifest, { onLaunch, onExport, manifest
     'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.83);' +
     'display:flex;align-items:center;justify-content:center;';
 
-  const ctx = { manifestUrl, videoUrl, hasExport: !!onExport, hasLaunch: !!onLaunch };
+  const ctx = { manifestUrl, videoUrl, hasExport: !!onExport };
 
   function mount() {
     overlay.innerHTML = sections.length
@@ -279,10 +265,6 @@ export function openPresentationPreview(manifest, { onLaunch, onExport, manifest
     overlay.querySelector('[data-testid="preview-close-btn"]')
       ?.addEventListener('click', closePresentationPreview);
 
-    if (onLaunch) {
-      overlay.querySelector('[data-testid="preview-launch-btn"]')
-        ?.addEventListener('click', onLaunch);
-    }
     if (onExport) {
       overlay.querySelector('[data-testid="preview-export-btn"]')
         ?.addEventListener('click', onExport);

@@ -1,11 +1,13 @@
-// Browser tests for the Hyperframes/PRESENT integration.
+// Browser tests for the PRESENT / Preview Deck integration.
 //
 // Run:   npx playwright test
 // Shots: test-artifacts/hyperframes/
 //
-// These tests exercise the PRESENT button, launch guardrails, manifest URL
-// construction, preview deck, and non-navigable deck mode without touching
-// the real Hyperframes endpoint. window.open is stubbed at the page level.
+// These tests exercise the PRESENT button, guardrails, the published (fetchable)
+// manifest URL, the preview deck, and non-navigable deck mode. There is no
+// external HyperFrames launch — the deck is rendered to MP4 by the CLI. The
+// published manifest URL is read via the window.__ELVIE_TEST_LAST_MANIFEST_URL__
+// hook (set only when window.__ELVIE_TEST__ is truthy).
 
 import { test, expect } from '@playwright/test';
 import path from 'path';
@@ -18,7 +20,6 @@ const SHOT_DIR = path.join(__dirname, '../../test-artifacts/hyperframes');
 fs.mkdirSync(SHOT_DIR, { recursive: true });
 
 const PAGE_URL = '/index.html';
-const HYPERFRAMES_ORIGIN = 'https://hyperframes.heygen.com';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -80,6 +81,8 @@ const NON_NAV_CONTEXT = {
 async function loadPage(page) {
   await page.goto(PAGE_URL);
   await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+  // Enable test hooks (exposes manifest + published manifest URL) before PRESENT.
+  await page.evaluate(() => { window.__ELVIE_TEST__ = true; });
   await page.evaluate(() => {
     if (typeof openReportPanel === 'function') openReportPanel();
     else document.querySelector('.app')?.classList.add('report-open');
@@ -116,12 +119,13 @@ async function waitForPreviewOrError(page, timeout = 12_000) {
   );
 }
 
-// Click the "Open in Hyperframes" button inside the preview and wait for the URL.
-async function launchFromPreview(page) {
-  const btn = page.locator('[data-testid="preview-launch-btn"]');
-  await btn.waitFor({ state: 'visible', timeout: 4000 });
-  await btn.click();
-  await page.waitForFunction(() => (window.__capturedLaunchUrls?.length ?? 0) > 0, { timeout: 6000 });
+// Read the published (fetchable) manifest URL exposed by the test hook.
+async function getPublishedManifestUrl(page) {
+  await page.waitForFunction(
+    () => typeof window.__ELVIE_TEST_LAST_MANIFEST_URL__ === 'string',
+    { timeout: 6000 }
+  );
+  return page.evaluate(() => window.__ELVIE_TEST_LAST_MANIFEST_URL__);
 }
 
 async function screenshot(page, name) {
@@ -184,11 +188,10 @@ test.describe('Hyperframes PRESENT integration', () => {
     await screenshot(page, '02-guardrail-no-report');
   });
 
-  test('T3 — with navigable findings, PRESENT shows preview then launches on button click', async ({ page }) => {
+  test('T3 — with navigable findings, PRESENT shows preview with export action, no external launch', async ({ page }) => {
     await loadPage(page);
 
     await page.evaluate((ctx) => { window.setActiveReportContext(ctx); }, NAV_CONTEXT);
-    await stubWindowOpen(page);
     await page.locator('#rpPresentBtn').click();
 
     // Preview should open
@@ -200,23 +203,15 @@ test.describe('Hyperframes PRESENT integration', () => {
     await expect(page.locator('[data-testid="preview-finding-title"]')).toHaveText('Medial meniscus tear');
     await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 1');
 
+    // Export action is present; the external launch button no longer exists.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
+
     // No error banner
     const bannerVisible = await page.locator('#rpErrorBanner').isVisible().catch(() => false);
     expect(bannerVisible).toBe(false);
 
     await screenshot(page, '03-preview-navigable');
-
-    // Click "Open in Hyperframes" to trigger external launch
-    await launchFromPreview(page);
-
-    const captured = await getCapturedUrls(page);
-    expect(captured).toHaveLength(1);
-    const launchUrl = captured[0];
-    expect(launchUrl).toContain(HYPERFRAMES_ORIGIN);
-    expect(launchUrl).toContain('manifest=');
-    expect(launchUrl).toContain('source=elvie-viewer');
-    expect(launchUrl).not.toContain('payloadVersion');
-    expect(launchUrl).not.toContain('positiveFindings');
   });
 
   test('T3b — seeded report state — PRESENT button visible with report loaded', async ({ page }) => {
@@ -232,11 +227,10 @@ test.describe('Hyperframes PRESENT integration', () => {
     await screenshot(page, '04-report-loaded-present-visible');
   });
 
-  test('T4 — non-navigable context: preview opens in text-only mode, launch still works', async ({ page }) => {
+  test('T4 — non-navigable context: preview opens in text-only mode', async ({ page }) => {
     await loadPage(page);
 
     await page.evaluate((ctx) => { window.setActiveReportContext(ctx); }, NON_NAV_CONTEXT);
-    await stubWindowOpen(page);
     await page.locator('#rpPresentBtn').click();
 
     await waitForPreviewOrError(page);
@@ -248,42 +242,33 @@ test.describe('Hyperframes PRESENT integration', () => {
     // Evidence placeholder shown instead of image
     await expect(page.locator('[data-testid="preview-evidence-placeholder"]')).toBeVisible();
 
+    // No external launch button
+    await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
+
     // No error banner
     const bannerVisible = await page.locator('#rpErrorBanner').isVisible().catch(() => false);
     expect(bannerVisible).toBe(false);
 
     await screenshot(page, '05-preview-non-navigable');
-
-    // External launch still works from preview
-    await launchFromPreview(page);
-    const captured = await getCapturedUrls(page);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]).toContain(HYPERFRAMES_ORIGIN);
-    expect(captured[0]).toContain('manifest=');
   });
 
-  test('T5 — manifest URL is a fetchable service-worker URL, not a blob: reference', async ({ page }) => {
+  test('T5 — published manifest URL is a fetchable service-worker URL, not a blob: reference', async ({ page }) => {
     await loadPage(page);
 
     await page.evaluate((ctx) => { window.setActiveReportContext(ctx); }, NAV_CONTEXT);
-    await stubWindowOpen(page);
     await page.locator('#rpPresentBtn').click();
 
     await waitForPreviewOrError(page);
-    await launchFromPreview(page);
 
-    const captured = await getCapturedUrls(page);
-    const launchUrl = new URL(captured[0]);
-    const manifestParam = launchUrl.searchParams.get('manifest');
-    expect(manifestParam).toBeTruthy();
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toBeTruthy();
     // Must not be a session-scoped blob: URL
-    expect(manifestParam).not.toMatch(/^blob:/);
+    expect(manifestUrl).not.toMatch(/^blob:/);
     // Must be a real http URL served by the local dev server via service worker
-    expect(manifestParam).toMatch(/^http:\/\/localhost/);
-    expect(launchUrl.origin).toBe(HYPERFRAMES_ORIGIN);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
 
     // Verify the manifest URL is actually fetchable and returns valid JSON
-    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestParam);
+    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestUrl);
     expect(fetched.payloadVersion).toBe('presentation-manifest-v1');
     expect(fetched.accession).toBe(NAV_CONTEXT.accession);
 
