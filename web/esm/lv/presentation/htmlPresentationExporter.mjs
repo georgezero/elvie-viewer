@@ -537,15 +537,17 @@ export function buildTitleSceneV2({ manifest, start, backdropUrls = [] }) {
 export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start, resolveOpts }) {
   const idA = `sc-find-${sceneIndex}-a`;
   const idB = `sc-find-${sceneIndex}-b`;
+  const sweepId = `${idA}-hl`;
   const sentence = norm(section.reportSentence) || norm(section.text);
-  const phraseText = norm(section.highlightPhrase);
+  const highlighted = highlightSentence(sentence, section.highlightPhrase, sweepId);
   const title = esc(norm(section.title));
   const imgUrl = resolveEvidenceUrl(section, resolveOpts);
   const pointer = section.pointer;
   const orientation = esc(norm(section.orientation));
   const winLabel = esc(windowLabel(section));
   const vOrigin = vignetteOrigin(section);
-  const hasHighlight = !!(phraseText && sentence.toLowerCase().includes(phraseText.toLowerCase()));
+  const hasHighlight = !!(section.highlightPhrase && sentence.toLowerCase()
+    .includes(norm(section.highlightPhrase).toLowerCase()));
 
   const textDur = TV2.findingText + TV2.xfade;
   // Image starts earlier than V1 — more overlap so the transition feels like
@@ -636,31 +638,20 @@ export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start,
     ${rightStage}
     ${orientLabel}`);
 
-  // Two-line layout: full sentence (muted context) above; isolated phrase below (large, bright).
-  // Splitting into separate elements prevents any scaling or animation from crowding adjacent text.
-  const phraseEl = hasHighlight
-    ? `<div id="${idA}-phrase" style="font-size:62px;font-weight:700;color:#c8daf0;line-height:1.2;opacity:0;
-         margin-top:14px;">${esc(phraseText)}</div>`
-    : '';
-
   const beatA = clip(idA, start, textDur, `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
-    <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;
-      justify-content:center;padding:0 190px;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;
-        margin-bottom:26px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
-      <div id="${idA}-context" style="font-size:26px;font-weight:500;color:#3a4860;
-        line-height:1.55;opacity:0;">${esc(sentence)}</div>
-      ${phraseEl}
+    <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 190px;">
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:26px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
+      <div id="${idA}-line" style="font-size:50px;font-weight:600;color:#54607e;line-height:1.45;opacity:0;">${highlighted}</div>
     </div>`);
 
   const tl = [
     `tl.to("#${idA}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(start)});`,
-    `tl.fromTo("#${idA}-context", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" }, ${f2(start + 0.2)});`,
+    `tl.fromTo("#${idA}-line", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.2)});`,
   ];
 
   if (hasHighlight) {
-    tl.push(`tl.fromTo("#${idA}-phrase", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.85)});`);
+    tl.push(`tl.fromTo("#${sweepId}", { backgroundPosition: "100% 0" }, { backgroundPosition: "0% 0", duration: 0.8, ease: "power1.inOut" }, ${f2(start + 0.7)});`);
   }
 
   // Beat A lifts and fades; image cross-dissolves in with more overlap than V1.
