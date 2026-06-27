@@ -23,6 +23,7 @@
 //   - `studyLabel`: accession string.
 
 import { normalizeFindingImageReference } from '../report/imageLinkProvider.mjs';
+import { buildStoryboard } from './presentationStoryboard.mjs';
 
 export const PRESENTATION_MANIFEST_VERSION = 'presentation-manifest-v1';
 export const DEFAULT_MANIFEST_SOURCE = 'elvie-viewer';
@@ -236,6 +237,28 @@ export function buildPresentationManifest(context, options = {}) {
     buildPresentationSection(f, accession, i, evidenceMap, { debug, includeTrace })
   );
 
+  // Storyboard scaffolding for the cinematic video: summary, impression bullets,
+  // per-scene narration, per-finding highlight phrase + pointer hint. Pure and
+  // deterministic; derived from the structured findings. Narration is plain text
+  // (no TTS here) so any speech engine can consume it later.
+  const modality = norm(ctx.modality) || norm(positive[0]?.modality) || null;
+  const storyboard = buildStoryboard({
+    modality, accession,
+    positiveFindings: positive,
+    negativeFindings: negative,
+    examName: norm(ctx.examName) || null
+  });
+  // Enrich each positive section with its storyboard fields.
+  sections.forEach((s) => {
+    const sb = storyboard.perFinding[s.id];
+    if (sb) {
+      s.reportSentence = sb.reportSentence;
+      s.highlightPhrase = sb.highlightPhrase;
+      s.pointer = sb.pointer;
+      s.narration = sb.narration;
+    }
+  });
+
   const manifest = {
     payloadVersion: PRESENTATION_MANIFEST_VERSION,
     source,
@@ -243,6 +266,16 @@ export function buildPresentationManifest(context, options = {}) {
     accession,
     presentationTitle: derivePresentationTitle(accession, positive),
     studyLabel: accession || null,
+    study: {
+      examName: storyboard.examName,
+      accession,
+      modality,
+      studyDate: norm(ctx.studyDate) || null,
+      clinicalIndication: norm(ctx.clinicalIndication) || null
+    },
+    summary: storyboard.summary,
+    impression: storyboard.impression,
+    narrationScript: storyboard.narrationScript,
     reportContext: {
       accession,
       reportSource: norm(ctx.source) || null,

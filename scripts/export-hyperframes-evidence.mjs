@@ -208,11 +208,28 @@ for (let i = 0; i < processedManifest.sections.length; i++) {
   }
 }
 
-// ── 8. Save presentation.json ─────────────────────────────────────────────────
+// ── 8. Enrich study metadata for the title card ───────────────────────────────
+// The browser context may not carry study date / clinical indication. Backfill
+// them from the demo report record so the title scene is complete. (Presentation
+// chrome only — does not touch evidence.)
+try {
+  const { getReport } = await import(`${ROOT}/web/esm/lv/findings/reportRegistry.mjs`);
+  const report = getReport(accession);
+  if (report) {
+    processedManifest.study = processedManifest.study || {};
+    if (!processedManifest.study.examName && report.examName) processedManifest.study.examName = report.examName.toUpperCase();
+    if (!processedManifest.study.studyDate && report.studyDate) processedManifest.study.studyDate = report.studyDate;
+    if (!processedManifest.study.clinicalIndication && report.clinicalIndication) processedManifest.study.clinicalIndication = report.clinicalIndication;
+  }
+} catch (e) { console.log(`(study metadata backfill skipped: ${e.message})`); }
+
+// ── Save presentation.json ────────────────────────────────────────────────────
 
 const presentationPath = resolve(outputDir, 'presentation.json');
 writeFileSync(presentationPath, JSON.stringify(processedManifest, null, 2));
 console.log(`Manifest: ${presentationPath}`);
+console.log(`Storyboard: "${processedManifest.summary || ''}"`);
+console.log(`Title: ${processedManifest.study?.examName || ''} | ${processedManifest.study?.studyDate || '(no date)'} | ${processedManifest.study?.clinicalIndication || '(no indication)'}`);
 
 // Log detected viewport state per captured finding (audit).
 processedManifest.sections.forEach((s, i) => {

@@ -99,6 +99,36 @@ The true flow is entirely local:
 Elvie viewer  →  browser evidence export  →  HTML composition  →  npx hyperframes render  →  MP4  →  link in Preview Deck
 ```
 
+### Cinematic storyboard
+
+The MP4 is a narrated case presentation built from reusable scene builders in
+`htmlPresentationExporter.mjs`, each emitting one GSAP timeline segment:
+
+| Scene | Duration | Content |
+|-------|----------|---------|
+| `TitleScene`   | 3s | exam name, accession, study date, indication over a blurred/darkened CT backdrop with a slow push-in |
+| `SummaryScene` | 4s | one-line AI study summary, animated in with an accent rule |
+| `FindingScene` × N | 9s each | **beat A (3s)**: report sentence with the key phrase highlighted; **beat B (6s)**: cross-dissolve to the captured CT image with a slow Ken Burns zoom, an animated pointer ring, and a metadata card (series/image). Image fills ~75% of the frame. |
+| `ClosingScene` | 5s | impression bullets, gentle fade to black |
+
+For the CT Head demo (2 findings) the total runtime is **31s** (3 + 4 + 2×9 + 5,
+plus cross-dissolve tail). Transitions are fades / cross-dissolves — no hard cuts.
+
+The storyboard text (summary, impression bullets, per-finding highlight phrase,
+pointer hint) is generated deterministically in `presentationStoryboard.mjs` and
+stored on the manifest (`study`, `summary`, `impression`, per-section
+`reportSentence`/`highlightPhrase`/`pointer`/`narration`).
+
+**Pointer overlay:** each finding may carry a normalized `pointer` `{x, y, style}`
+that the renderer draws as a pulsing ring tracking the Ken Burns zoom. Positions
+are hand-placed for the demo studies (`DEMO_POINTERS`) but the renderer consumes
+`finding.localization` first, so future AI localization data drops in unchanged.
+
+**Narration (no TTS yet):** every scene gets a plain-text `narration` segment,
+collected in `manifest.narrationScript` (`[{scene, findingId?, narration}]`). The
+video renderer is independent of narration; a later pass can feed these to browser
+TTS, OpenAI, ElevenLabs, Cartesia, etc.
+
 ### Build the CT Head video
 
 ```bash

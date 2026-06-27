@@ -36,9 +36,11 @@ const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 
-// Must match the durations in htmlPresentationExporter.mjs.
-const INTRO_DURATION_S = 2;
-const SLIDE_DURATION_S = 7;
+// Scene timing mirrors htmlPresentationExporter.mjs (title 3 + summary 4 +
+// per-finding 9 [text 3 + image 6] + closing 5). The first finding's CT image
+// beat starts at 3+4+3 = 10s and runs 6s, so its midpoint is 13s — used for the
+// render-input screenshot and the post-render frame check.
+const SLIDE1_MID = 13.0;
 
 const { exportHtmlComposition } =
   await import(`${ROOT}/web/esm/lv/presentation/htmlPresentationExporter.mjs`);
@@ -50,9 +52,11 @@ const { exportHtmlComposition } =
 // skull ring plus mid-gray brain tissue — measures ~0.12; the placeholder panel
 // (all colours below ~70 luma) measures ~0.00, giving a wide separation.
 async function frameContainsImage(framePath) {
+  // The CT image is centered full-frame (object-fit:contain); sample the center
+  // 60% where the skull/brain pixels live.
   const ff = spawnSync('ffmpeg', [
     '-i', framePath,
-    '-vf', 'crop=in_w*0.62:in_h:in_w*0.38:0,scale=80:45,format=gray',
+    '-vf', 'crop=in_w*0.6:in_h:in_w*0.2:0,scale=80:45,format=gray',
     '-f', 'rawvideo', '-',
   ], { maxBuffer: 1 << 20, timeout: 30_000 });
   if (ff.status !== 0 || !ff.stdout || ff.stdout.length === 0) return null;
@@ -217,7 +221,6 @@ mkdirSync(shotDir, { recursive: true });
 
 const renderInputShot = resolve(debugDir, 'render-input-slide-1.png');
 const compositionShot = resolve(shotDir, `composition-${accession}.png`);
-const SLIDE1_MID = INTRO_DURATION_S + SLIDE_DURATION_S / 2; // middle of slide 1
 
 let inputImageOk = false;
 try {
@@ -232,11 +235,10 @@ try {
   }, SLIDE1_MID);
   await page.waitForTimeout(300);
 
-  // Verify the slide-1 CT <img> actually decoded.
+  // Verify the first finding's CT <img> actually decoded (image beat = sc-find-0-b).
   inputImageOk = await page.evaluate(() => {
-    const slide = document.querySelector('#clip-slide-0');
-    if (!slide) return false;
-    const img = slide.querySelector('img');
+    const img = document.querySelector('#sc-find-0-b-img') ||
+                document.querySelector('#sc-find-0-b img');
     return !!img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
   });
 
@@ -260,7 +262,7 @@ if (!inputImageOk && embeddedAssets > 0) {
 const outputPath = resolve(rendersDir, `${accession}.mp4`);
 const hfBin      = resolve(ROOT, 'node_modules', '.bin', 'hyperframes');
 
-const totalDuration = INTRO_DURATION_S + manifest.sections.length * SLIDE_DURATION_S;
+const totalDuration = 3 + 4 + manifest.sections.length * 9 + 5; // title+summary+findings+closing
 console.log(`\nRendering (${totalDuration}s composition at 30fps)…\n`);
 
 const result = spawnSync(
