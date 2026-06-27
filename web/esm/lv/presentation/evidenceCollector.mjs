@@ -108,8 +108,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
  *
  * Capture mirrors the live viewer as closely as possible:
  *   1. navigate to the finding's series/image
- *   2. apply the finding's window/level preset (e.g. brain, bone) so the
- *      captured frame matches what a reader sees in the viewer
+ *   2. let elvie-viewer derive and apply the window/level for this finding
+ *      (applyViewerWindowing runs the viewer's own classifier — the capture does
+ *      not guess or trust a seeded preset hint)
  *   3. read back the actual viewport VOI/camera state for the evidence metadata
  *   4. capture the rendered Cornerstone canvas (no DOM PHI overlays are included —
  *      patient banners are HTML siblings, not part of the WebGL canvas)
@@ -120,7 +121,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
  * @param {number}   [options.settleMs=600]          - ms to wait after navigation
  * @param {number}   [options.presetSettleMs=450]    - ms to wait after applying W/L
  * @param {function} [options.getCanvas]             - injectable canvas accessor (tests)
- * @param {function} [options.applyWindowPreset]     - async (presetName) => apply W/L to active pane
+ * @param {function} [options.applyViewerWindowing]  - async (finding) => presetName|null;
+ *                                                      derives + applies W/L via the viewer's
+ *                                                      own classifier; returns the applied preset
  * @param {function} [options.readViewportState]     - () => { windowCenter, windowWidth, ... }
  * @returns {Promise<EvidenceResult>}
  */
@@ -129,14 +132,16 @@ export async function captureViewportEvidence(finding, {
   settleMs = 600,
   presetSettleMs = 450,
   getCanvas,
-  applyWindowPreset,
+  applyViewerWindowing,
   readViewportState
 } = {}) {
   const findingId = norm(finding?.id);
   const seriesNumber = asFiniteInt(finding?.seriesNumber ?? finding?.series_number);
   const imageNumber = asFiniteInt(finding?.imageNumber ?? finding?.image_number);
   const accession = norm(finding?.accession);
-  const windowPreset = norm(finding?.windowPreset ?? finding?.window_preset) || null;
+  // The seeded preset is only a hint recorded for reference; the viewer's own
+  // classifier (applyViewerWindowing) is the source of truth for what is applied.
+  const windowPresetHint = norm(finding?.windowPreset ?? finding?.window_preset) || null;
 
   const base = {
     type: 'viewport-capture',
@@ -145,7 +150,7 @@ export async function captureViewportEvidence(finding, {
     accession: accession || null,
     seriesNumber,
     imageNumber,
-    windowPreset
+    windowPresetHint
   };
 
   if (!isNavigableFinding(finding)) {
@@ -171,14 +176,15 @@ export async function captureViewportEvidence(finding, {
   // Wait for the viewport to settle after navigation.
   if (settleMs > 0) await sleep(settleMs);
 
-  // Apply the finding's window/level preset so the capture matches the viewer.
+  // Let elvie-viewer derive + apply the window/level for this finding (its own
+  // classifier — not the seeded hint). appliedPreset is what the viewer chose.
   let appliedPreset = null;
-  if (windowPreset && typeof applyWindowPreset === 'function') {
+  if (typeof applyViewerWindowing === 'function') {
     try {
-      const ok = await applyWindowPreset(windowPreset);
-      if (ok !== false) appliedPreset = windowPreset;
+      const chosen = await applyViewerWindowing(finding);
+      if (typeof chosen === 'string' && chosen) appliedPreset = chosen;
       if (presetSettleMs > 0) await sleep(presetSettleMs);
-    } catch { /* preset is best-effort; capture whatever is rendered */ }
+    } catch { /* windowing is best-effort; capture whatever is rendered */ }
   }
 
   // Read back the live viewport state (VOI/camera) for audit metadata.

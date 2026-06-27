@@ -16726,13 +16726,24 @@ async function launchHyperframesPresentation(opts = {}) {
     const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
     const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings, {
       settleMs: window.__ELVIE_EVIDENCE_SETTLE_MS__ ?? 600,
-      // Apply each finding's window/level preset so captured evidence matches the
-      // live viewer appearance (e.g. bone window for a calvarial fracture).
-      applyWindowPreset: async (preset) => {
+      // Derive the window/level the SAME way elvie-viewer does for a finding click:
+      // classifyCtWindowPresetForFinding (the classifier maybeApplyAutoCtWindowingForFinding
+      // uses) reads the finding text + series description. e.g. "infarct" → brain_stroke,
+      // "fracture" → bone. We do not trust the seeded windowPreset hint; the viewer's
+      // deterministic classifier is the source of truth, so the capture matches the
+      // on-screen viewer for any finding, not just the seeded demo ones.
+      applyViewerWindowing: async (finding) => {
         try {
-          await applyWindowPresetLocal(preset, { silent: true, logTag: 'evidence_capture' });
-          return true;
-        } catch { return false; }
+          const sn = Number(finding?.seriesNumber ?? finding?.series_number);
+          const seriesEntry = (state.seriesCatalog || []).find((s) => Number(s?.series_number) === sn);
+          if (!seriesEntry || !isCtSeriesEntry(seriesEntry)) return null;
+          const c = classifyCtWindowPresetForFinding(finding, seriesEntry);
+          // Mirror maybeApplyAutoCtWindowingForFinding's threshold: only override when
+          // the classifier is confident (score >= 2). Otherwise leave the viewer default.
+          if (!c || c.score < 2) return null;
+          await applyWindowPresetLocal(c.preset, { silent: true, logTag: 'evidence_capture_auto' });
+          return c.preset;
+        } catch { return null; }
       },
       // Read the live VOI/camera state into the evidence metadata (audit/debug).
       readViewportState: () => readActiveNativeViewportState()
