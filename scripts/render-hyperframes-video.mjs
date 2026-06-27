@@ -124,6 +124,22 @@ if (existsSync(presentationPath)) {
   evidenceSource = 'registry (no image evidence — run npm run export:hyperframes:' + targetName + ')';
 }
 
+// Backfill patientFriendlyExplanation from the registry when presentation.json
+// predates the field (old exports). Non-destructive: only fills null/missing slots.
+try {
+  const { getReport, listFindings } = await import(`${ROOT}/web/esm/lv/findings/reportRegistry.mjs`);
+  const report = getReport(accession);
+  if (report) {
+    const byId = new Map(listFindings(accession).map(f => [f.id, f]));
+    manifest.sections.forEach((s) => {
+      if (s.patientFriendlyExplanation == null) {
+        const f = byId.get(s.id);
+        if (f?.patientFriendlyExplanation) s.patientFriendlyExplanation = f.patientFriendlyExplanation;
+      }
+    });
+  }
+} catch { /* optional — non-demo studies simply omit the field */ }
+
 const { sectionHasImage } = await import(`${ROOT}/web/esm/lv/presentation/htmlPresentationExporter.mjs`);
 
 if ((manifest.sections?.length ?? 0) === 0) {

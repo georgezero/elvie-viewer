@@ -127,7 +127,7 @@ test('image scenes are completely static — no camera movement on the anatomy',
   // Overlay animations still function: pointer + card + report sweep are present.
   assert.match(tl, /-ptr"/);     // pointer appears/fades
   assert.match(tl, /-ring"/);    // pointer pulse
-  assert.match(tl, /-card"/);    // metadata card fades in
+  assert.match(tl, /-panel"/);   // narrative panel fades in
   assert.match(tl, /-hl"/);      // report reading-sweep
 });
 

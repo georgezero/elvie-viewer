@@ -175,6 +175,7 @@ function buildPresentationSection(finding, accession, index, evidenceMap, { debu
     id: findingId,
     title: norm(finding?.label) || findingId,
     text: conciseFindingText(finding),
+    patientFriendlyExplanation: norm(finding?.patientFriendlyExplanation) || null,
     accession: findingAccession,
     navigable: nav.navigable,
     navigationStatus: nav.navigationStatus,

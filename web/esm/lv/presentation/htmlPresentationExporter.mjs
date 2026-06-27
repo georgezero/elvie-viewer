@@ -213,17 +213,11 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
 
   // Beat B (image) emitted BEFORE beat A so the text sits on top and reveals the
   // image as it lifts away.
-  const imagePanel = imgUrl
-    ? `<img class="evidence-img" id="${idB}-img" src="${esc(imgUrl)}" alt="${title} — CT evidence"
+  const imageEl = imgUrl
+    ? `<img class="evidence-img" id="${idB}-img" src="${esc(imgUrl)}" alt="${title} — evidence"
          style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;"/>`
     : `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#2a2a40;font-size:16px;">No image captured</div>`;
 
-  // Viewer-style framing: faint viewport border, soft vignette, gentle shadow.
-  const framing = `
-    <div style="position:absolute;inset:36px;border:1px solid rgba(90,150,220,.10);border-radius:6px;
-      box-shadow:0 30px 80px rgba(0,0,0,.55);pointer-events:none;"></div>
-    <div style="position:absolute;inset:0;pointer-events:none;
-      background:radial-gradient(ellipse at ${vOrigin},transparent 42%,rgba(2,2,8,.55) 100%);"></div>`;
   const orientLabel = orientation
     ? `<div style="position:absolute;top:52px;right:56px;font-family:monospace;font-size:13px;
         letter-spacing:.14em;color:#3a5575;opacity:.8;">${orientation}</div>`
@@ -241,32 +235,58 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
       </div>`;
   }
 
-  // Minimal, semi-transparent metadata card.
   const metaLines = [];
   if (section.navigable) {
     metaLines.push(`<span style="color:#46587e;">Series</span> ${esc(String(section.seriesNumber ?? ''))}`);
     metaLines.push(`<span style="color:#46587e;">Image</span> ${esc(String(section.imageNumber ?? ''))}`);
   }
-  const card = `
-    <div id="${idB}-card" style="position:absolute;left:64px;bottom:64px;opacity:0;
-      background:rgba(7,10,20,.42);backdrop-filter:blur(10px);border:1px solid rgba(70,90,140,.22);
-      border-radius:10px;padding:20px 26px;max-width:520px;">
-      <div style="font-size:28px;font-weight:600;color:#eef3ff;line-height:1.2;margin-bottom:${section.navigable || winLabel ? '10' : '0'}px;">${title}</div>
-      ${metaLines.length ? `<div style="font-family:monospace;font-size:15px;color:#8fb0dd;letter-spacing:.02em;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
-      ${winLabel ? `<div style="font-size:12px;color:#46587e;margin-top:${metaLines.length ? '6' : '0'}px;">${winLabel}</div>` : ''}
+  const findingBodyText = norm(section.text);
+  const patientText = norm(section.patientFriendlyExplanation);
+
+  // ── Left narrative panel (38% width) ─────────────────────────────────────────
+  // Full-height glass panel: finding title, series/image coordinates, radiologist
+  // description, and optional patient-friendly explanation. Designed to
+  // accommodate multi-line clinical findings without shrinking font or layout.
+  const leftPanel = `
+    <div id="${idB}-panel" style="position:absolute;left:0;top:0;bottom:0;width:38%;
+      background:rgba(6,8,18,.65);backdrop-filter:blur(14px);
+      border-right:1px solid rgba(70,90,140,.18);overflow:hidden;opacity:0;">
+      <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+        justify-content:center;padding:52px 40px 52px 52px;overflow:hidden;">
+        <div style="font-size:11px;color:#3a5080;text-transform:uppercase;
+          letter-spacing:.28em;margin-bottom:16px;">Finding ${findingNumber}</div>
+        <div style="font-size:24px;font-weight:600;color:#eef3ff;line-height:1.3;
+          margin-bottom:${metaLines.length || winLabel ? '12px' : '22px'};">${title}</div>
+        ${metaLines.length ? `<div style="font-family:monospace;font-size:13px;color:#8fb0dd;letter-spacing:.02em;
+          margin-bottom:${winLabel ? '8px' : '22px'};">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+        ${winLabel ? `<div style="font-size:11px;color:#46587e;margin-bottom:22px;">${winLabel}</div>` : ''}
+        <div style="width:32px;height:1px;background:rgba(70,90,140,.35);margin-bottom:22px;flex-shrink:0;"></div>
+        ${findingBodyText ? `<div style="font-size:15px;color:#b8c8e0;line-height:1.70;
+          margin-bottom:${patientText ? '28px' : '0'};flex-shrink:0;">${esc(findingBodyText)}</div>` : ''}
+        ${patientText ? `
+          <div style="font-size:11px;color:#2b3f5c;text-transform:uppercase;letter-spacing:.22em;
+            margin-bottom:10px;flex-shrink:0;">For patients</div>
+          <div style="font-size:14px;color:#556b80;line-height:1.70;font-style:italic;
+            flex-shrink:0;">${esc(patientText)}</div>` : ''}
+      </div>
     </div>`;
 
-  // The image stage is completely static — no transform, no Ken Burns, no pan.
-  // A captured radiology image is evidence and must not move.
+  // ── Right image stage (62% width) — static, no transform, no Ken Burns ───────
+  const rightStage = `
+    <div id="${idB}-stage" style="position:absolute;left:38%;right:0;top:0;bottom:0;">
+      ${imageEl}
+      <div style="position:absolute;inset:0;pointer-events:none;
+        background:radial-gradient(ellipse at center,transparent 44%,rgba(2,2,8,.50) 100%);"></div>
+      ${pointerHtml}
+      <div style="position:absolute;inset:28px;border:1px solid rgba(90,150,220,.09);border-radius:6px;
+        box-shadow:0 30px 80px rgba(0,0,0,.45);pointer-events:none;"></div>
+    </div>`;
+
   const beatB = clip(idB, imgStart, imgDur, `
     <div style="position:absolute;inset:0;background:#04040a;"></div>
-    <div id="${idB}-stage" style="position:absolute;inset:0;">
-      ${imagePanel}
-      ${pointerHtml}
-    </div>
-    ${framing}
-    ${orientLabel}
-    ${card}`);
+    ${leftPanel}
+    ${rightStage}
+    ${orientLabel}`);
 
   const beatA = clip(idA, start, textDur, `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
@@ -288,9 +308,9 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
   tl.push(`tl.to("#${idA}-wrap", { y: -60, scale: 0.92, opacity: 0, duration: ${f2(T.xfade + 0.2)}, ease: "power2.in" }, ${f2(imgStart - 0.1)});`);
   tl.push(`tl.to("#${idA}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`);
   tl.push(`tl.set("#${idA}", { opacity: 0 }, ${f2(imgStart + T.xfade)});`);
-  // Beat B: image fades in (static — no camera move), card rises, fade out.
+  // Beat B: image fades in (static — no camera move), narrative panel fades in, fade out.
   tl.push(`tl.to("#${idB}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`);
-  tl.push(`tl.fromTo("#${idB}-card", { opacity: 0, y: 26 }, { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" }, ${f2(imgStart + 0.6)});`);
+  tl.push(`tl.to("#${idB}-panel", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(imgStart + 0.3)});`);
   tl.push(`tl.to("#${idB}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart + T.findingImage)});`);
   tl.push(`tl.set("#${idB}", { opacity: 0 }, ${f2(imgStart + T.findingImage + T.xfade)});`);
 
