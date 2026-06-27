@@ -27,8 +27,11 @@
 
 import { spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -158,6 +161,38 @@ writeFileSync(indexPath, html, 'utf8');
 console.log(`\nComposition:  ${indexPath}`);
 console.log(`Embedded evidence images (inline data URLs): ${embeddedAssets}`);
 
+// ── Provenance proof: Preview Deck image hash == HTML-embedded image hash ──────
+// The export step recorded each finding's Preview Deck SHA256 (evidence.sha256).
+// Here we hash the image actually embedded in the generated HTML and confirm they
+// are identical — proving no divergent evidence was generated for the MP4 path.
+const embeddedDataUrls = [...html.matchAll(/src="data:image\/png;base64,([^"]+)"/g)].map(m => m[1]);
+const capturedSections = (manifest.sections || []).filter(s =>
+  (s.imageEvidence || []).some(e => e.status === 'captured' && (e.assetPath || e.dataUrl)));
+
+const hashReport = [];
+let hashMismatch = false;
+console.log('\n=== Evidence provenance (Preview Deck → HTML) ===');
+capturedSections.forEach((section, idx) => {
+  const ev = section.imageEvidence.find(e => e.status === 'captured' && (e.assetPath || e.dataUrl));
+  const previewSha = ev?.sha256 || null;          // recorded by the export step
+  const b64 = embeddedDataUrls[idx];
+  const htmlSha = b64 ? sha256(Buffer.from(b64, 'base64')) : null;
+  const match = previewSha && htmlSha ? previewSha === htmlSha : null;
+  if (match === false) hashMismatch = true;
+  hashReport.push({ finding: section.id, previewSource: ev?.previewSource || 'preview-deck:imageEvidence.dataUrl',
+    htmlSource: ev?.assetPath || 'inline-data-url', previewSha256: previewSha, htmlSha256: htmlSha, match });
+  console.log(`Finding:        ${section.id}`);
+  console.log(`  Preview source: ${ev?.previewSource || 'preview-deck:imageEvidence.dataUrl'}`);
+  console.log(`  HTML source:    ${ev?.assetPath || 'inline-data-url'}`);
+  console.log(`  Preview SHA256: ${previewSha || '(not recorded — run export step)'}`);
+  console.log(`  HTML SHA256:    ${htmlSha || '(none embedded)'}`);
+  console.log(`  Match:          ${match === null ? 'UNKNOWN' : (match ? 'YES' : 'NO')}`);
+});
+if (hashMismatch) {
+  console.error('\nERROR: HTML-embedded image differs from the Preview Deck evidence. Aborting.');
+  process.exit(2);
+}
+
 writeFileSync(resolve(projectDir, 'meta.json'), JSON.stringify({
   id: accession, name: manifest.presentationTitle, targetName, accession,
   evidenceSource, createdAt: new Date().toISOString(),
@@ -279,6 +314,7 @@ writeFileSync(resolve(projectDir, 'render.json'), JSON.stringify({
   evidenceSource,
   assetMode: 'data-url',
   embeddedAssets,
+  evidenceProvenance: hashReport,
   compositionPath: indexPath,
   renderInputScreenshot: renderInputShot,
   renderInputImageDecoded: inputImageOk,

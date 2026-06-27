@@ -22,10 +22,12 @@
 //   - DICOM server accessible at DICOMWEB_URL with the target accession loaded
 
 import { chromium } from 'playwright';
-import { spawnSync } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -173,7 +175,10 @@ const shotPath = resolve(shotDir, `export-${accession}-preview.png`);
 await page.locator('[data-testid="preview-slide"]').screenshot({ path: shotPath });
 console.log(`Screenshot: ${shotPath}`);
 
-// ── 7. Extract base64 evidence → PNG files ────────────────────────────────────
+// ── 7. The Preview Deck is the single source of truth ─────────────────────────
+// The exact image the Preview Deck displays (imageEvidence.dataUrl) becomes the
+// canonical evidence artifact. We decode it once to a PNG, hash it, and reference
+// that asset from presentation.json. No second viewport render/capture happens.
 
 const processedManifest = JSON.parse(JSON.stringify(manifest));
 const savedAssets = [];
@@ -189,13 +194,17 @@ for (let i = 0; i < processedManifest.sections.length; i++) {
     const assetPath = resolve(assetsDir, assetName);
     const b64 = evidence.dataUrl.replace(/^data:image\/\w+;base64,/, '');
     const buf = Buffer.from(b64, 'base64');
+    const hash = sha256(buf);
     writeFileSync(assetPath, buf);
-    console.log(`Asset: ${assetPath} (${(buf.byteLength / 1024).toFixed(0)} KB)`);
-    savedAssets.push({ section: i + 1, assetName, sizeKB: Math.round(buf.byteLength / 1024) });
+    console.log(`Asset: ${assetPath} (${(buf.byteLength / 1024).toFixed(0)} KB) sha256=${hash.slice(0, 16)}…`);
+    savedAssets.push({ section: i + 1, sectionId: section.id, assetName, sizeKB: Math.round(buf.byteLength / 1024), sha256: hash });
 
-    // Replace data URL with relative asset path for the render script
+    // Canonical evidence: the exact bytes the Preview Deck displays.
+    // Replace the inline data URL with an asset reference + provenance for the render step.
     delete evidence.dataUrl;
     evidence.assetPath = `assets/${assetName}`;
+    evidence.previewSource = 'preview-deck:imageEvidence.dataUrl';
+    evidence.sha256 = hash;
   }
 }
 
@@ -215,69 +224,62 @@ processedManifest.sections.forEach((s, i) => {
     `zoom=${vs.zoom != null ? vs.zoom.toFixed(1) : '?'}`);
 });
 
-// ── 9. Live-viewer screenshots at capture time ────────────────────────────────
-// Close the preview, then re-drive the viewer to each finding (same navigation +
-// window/level the capture used) and screenshot the on-screen viewport. This is
-// the live-viewer reference the exported evidence asset should match.
+// ── 9. Prove the Preview Deck shows exactly the canonical asset ───────────────
+// Walk the open Preview Deck slides, screenshot each, and hash the displayed
+// <img> src. This reads the rendered deck DOM — it does NOT re-render the viewer.
 
-await page.keyboard.press('Escape').catch(() => {});
-await page.waitForTimeout(300);
-
-const liveShots = [];
+const previewProofs = [];
 for (let i = 0; i < processedManifest.sections.length; i++) {
-  const section = processedManifest.sections[i];
-  const ev = (section.imageEvidence || []).find(e => e.status === 'captured');
-  if (!ev) continue;
-
-  const seriesNumber = section.seriesNumber ?? ev.seriesNumber;
-  const imageNumber  = section.imageNumber ?? ev.imageNumber;
-  const preset       = ev.appliedPreset || section.windowPreset || null;
-
-  await page.evaluate(async ({ accession, findingId, seriesNumber, imageNumber, preset }) => {
-    await window.dispatchViewerCommand?.({
-      type: 'openStudyThenFinding',
-      accession,
-      findingId,
-      imageReference: { type: 'series-image', seriesNumber, imageNumber }
-    });
-    await new Promise(r => setTimeout(r, 700));
-    if (preset && typeof window.applyWindowPresetLocal === 'function') {
-      try { await window.applyWindowPresetLocal(preset, { silent: true, logTag: 'export_live_shot' }); } catch {}
-    }
-    await new Promise(r => setTimeout(r, 450));
-  }, { accession, findingId: section.id, seriesNumber, imageNumber, preset });
-
-  const liveShotPath = resolve(debugDir, `live-viewer-before-capture-finding-${i + 1}.png`);
-  const vpEl = page.locator('.native-cs-viewport').first();
+  // Screenshot the current Preview Deck slide.
+  const deckShot = resolve(debugDir, `preview-deck-finding-${i + 1}.png`);
   try {
-    await vpEl.screenshot({ path: liveShotPath });
-    liveShots.push({ section: i + 1, path: liveShotPath, assetName: `finding-${i + 1}.png` });
-    console.log(`Live viewer: ${liveShotPath}`);
-  } catch (e) {
-    console.log(`(Live viewer screenshot ${i + 1} skipped: ${e.message})`);
+    await page.locator('[data-testid="preview-slide"]').screenshot({ path: deckShot });
+  } catch { /* non-fatal */ }
+
+  // Hash the image the deck is actually displaying for this slide.
+  const domHash = await page.evaluate(async () => {
+    const img = document.querySelector('[data-testid="preview-evidence-img"]');
+    const src = img?.getAttribute('src') || '';
+    if (!src.startsWith('data:')) return { src: src ? 'non-data-url' : 'none', sha256: null };
+    const b64 = src.replace(/^data:image\/\w+;base64,/, '');
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    return { src: 'preview-deck:img[data-testid=preview-evidence-img]', sha256: hex };
+  });
+  previewProofs.push({ section: i + 1, deckShot, ...domHash });
+
+  // Advance to the next slide (if any).
+  if (i < processedManifest.sections.length - 1) {
+    await page.locator('[data-testid="preview-next-btn"]').click().catch(() => {});
+    await page.waitForTimeout(150);
   }
 }
 
-// ── 10. Report ────────────────────────────────────────────────────────────────
-
 await browser.close();
 
-// ── 11. Side-by-side comparison images (live viewer | exported asset) ─────────
-// Requires ffmpeg; non-fatal if unavailable.
-for (const shot of liveShots) {
-  const assetPath = resolve(assetsDir, shot.assetName);
-  const cmpPath   = resolve(debugDir, `capture-comparison-finding-${shot.section}.png`);
-  if (!existsSync(shot.path) || !existsSync(assetPath)) continue;
-  const ff = spawnSync('ffmpeg', [
-    '-y', '-i', shot.path, '-i', assetPath,
-    '-filter_complex', '[0:v]scale=640:-1[a];[1:v]scale=640:-1[b];[a][b]hstack=inputs=2',
-    cmpPath,
-  ], { encoding: 'utf8', timeout: 60_000 });
-  if (ff.status === 0 && existsSync(cmpPath)) {
-    console.log(`Comparison:  ${cmpPath}`);
-  } else {
-    console.log(`(Comparison ${shot.section} skipped: ffmpeg unavailable or failed)`);
-  }
+// ── 10. Debug report: Preview vs HTML-asset hashes ────────────────────────────
+// (HTML-asset hash == the PNG we just wrote == the decoded Preview data URL.)
+
+console.log('\n=== Evidence provenance (Preview Deck → asset) ===');
+let allMatch = true;
+for (const a of savedAssets) {
+  const proof = previewProofs.find(p => p.section === a.section);
+  const previewHash = proof?.sha256 || '(n/a)';
+  const match = proof?.sha256 ? (proof.sha256 === a.sha256) : null;
+  if (match === false) allMatch = false;
+  console.log(`Finding:        ${a.sectionId}`);
+  console.log(`  Preview source: ${proof?.src || 'preview-deck:imageEvidence.dataUrl'}`);
+  console.log(`  Asset source:   ${a.assetName} (decoded from Preview data URL)`);
+  console.log(`  Preview SHA256: ${previewHash}`);
+  console.log(`  Asset SHA256:   ${a.sha256}`);
+  console.log(`  Match:          ${match === null ? 'UNKNOWN (no DOM img)' : (match ? 'YES' : 'NO')}`);
+}
+if (!allMatch) {
+  console.error('\nERROR: Preview Deck image hash does not match the exported asset.');
+  process.exit(2);
 }
 
 console.log('\n=== Export complete ===');

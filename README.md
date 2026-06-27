@@ -142,38 +142,52 @@ web/generated/hyperframes/NI9f7ff9/
 curl http://localhost:4173/lv-manifest/<id>.json | python3 -m json.tool
 ```
 
-### Evidence appearance matches the live viewer
+### The Preview Deck is the single source of truth
 
-Evidence is captured from Elvie's **rendered Cornerstone viewport canvas**, not
-reconstructed from DICOMweb. For each positive finding the export step:
+The image the **Preview Deck displays is the exact image embedded into the MP4**.
+There is one capture only, and it happens once, on the way into the Preview Deck:
 
-1. navigates the viewer to the finding's series/image
-2. applies the finding's window/level preset (e.g. `brain`, `bone`) so the
-   capture matches what a reader sees — the calvarial-fracture slide is captured
-   in **bone window**, the infarct slide in **brain window**
-3. reads the live viewport VOI/camera back into the evidence metadata
-4. captures the canvas
+```
+Viewer → navigate + apply W/L → capture canvas → imageEvidence.dataUrl
+       → Preview Deck shows that dataUrl
+       → export decodes that exact dataUrl → assets/finding-N.png
+       → HTML exporter embeds those exact bytes → HyperFrames MP4
+```
 
-Captured `imageEvidence` records carry, for audit/debug:
+The HTML exporter only consumes the manifest — it never queries DICOMweb and
+never re-renders the viewport. Window/level is applied **before** the Preview
+Deck exists (so the calvarial-fracture slide is captured in **bone window**, the
+infarct slide in **brain window**); nothing is reconstructed afterwards.
 
-- `captureSource` (`viewport-canvas`)
-- `appliedPreset` and `windowPreset` (the W/L preset applied for the capture)
-- `viewportState`: `windowCenter`, `windowWidth`, `voiRange`, `zoom`, `pan`,
-  `canvasWidth`/`canvasHeight`, `seriesNumber`/`imageNumber`
-- `diagnostics`: canvas count, viewport dimensions, blank-canvas check
+This identity is proven by SHA256: the export hashes the image the Preview Deck
+DOM actually shows and the decoded asset; the render hashes the image embedded in
+the generated HTML. All three hashes are identical per finding and recorded in
+`render.json` under `evidenceProvenance` (and printed during the build):
+
+```
+Finding:        healed-left-vertex-fracture
+  Preview source: preview-deck:imageEvidence.dataUrl
+  HTML source:    assets/finding-2.png
+  Preview SHA256: c0bea3aa…
+  HTML SHA256:    c0bea3aa…
+  Match:          YES
+```
+
+Captured `imageEvidence` records carry, for audit/debug: `captureSource`
+(`viewport-canvas`), `sha256`, `previewSource`, `appliedPreset`/`windowPreset`,
+`viewportState` (`windowCenter`, `windowWidth`, `voiRange`, `zoom`, `pan`,
+canvas dims, series/image), and `diagnostics` (canvas count, dims, blank check).
 
 PHI overlays are **not** included: patient banners are HTML siblings of the
 canvas, so `canvas.toDataURL()` captures only the rendered image pixels.
 
-Validation artifacts written under `web/generated/hyperframes/<accession>/debug/`:
+Validation artifacts under `web/generated/hyperframes/<accession>/debug/`:
 
 ```
-debug/live-viewer-before-capture-finding-1.png   on-screen viewer at capture time
-debug/live-viewer-before-capture-finding-2.png
-debug/capture-comparison-finding-1.png           side-by-side: live viewer | exported asset
-debug/capture-comparison-finding-2.png
-debug/render-input-slide-1.png                   exact HTML passed to the renderer
-debug/rendered-frame-1.png                       frame extracted from the MP4
+debug/preview-deck-finding-1.png    the Preview Deck slide (source of truth)
+debug/preview-deck-finding-2.png
+debug/render-input-slide-1.png      exact HTML passed to the renderer
+debug/rendered-frame-1.png          frame extracted from the MP4
 ```
 
 ### Limitations
@@ -183,10 +197,9 @@ debug/rendered-frame-1.png                       frame extracted from the MP4
   with placeholder panels instead of CT images.
 - Window/level preservation depends on the finding carrying a `windowPreset` and
   on the live Cornerstone viewport exposing VOI/camera state. When neither is
-  available the capture uses whatever the viewer currently shows, and the
-  `viewportState`/`appliedPreset` metadata fields are omitted.
-- Zoom/pan are recorded for audit but the composition presents the captured frame
-  as-is; it does not re-apply camera transforms.
+  available the capture uses whatever the viewer currently shows.
+- If hashes match but the MP4 still looks wrong, the cause is in the HTML/CSS or
+  HyperFrames rendering — not the evidence pipeline, which is hash-proven.
 
 ## Related
 

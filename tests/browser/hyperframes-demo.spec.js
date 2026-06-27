@@ -588,6 +588,71 @@ test.describe('MP4 render status in preview deck', () => {
   });
 });
 
+test.describe('Preview Deck is the single source of truth for evidence', () => {
+  // Proves the image the Preview Deck displays is byte-identical to the image the
+  // HTML exporter embeds — no second capture/render happens for the MP4 path.
+  // Uses a known evidence data URL so it runs without a DICOM server.
+
+  const KNOWN_PNG =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFklEQVR42mNk' +
+    'YPhfz0AEYBxVSF+FAP1mB+0Z2N3eAAAAAElFTkSuQmCC';
+
+  test('Preview Deck image hash equals HTML exporter image hash', async ({ page }) => {
+    await loadPage(page);
+
+    const result = await page.evaluate(async (KNOWN_PNG) => {
+      const sha256 = async (b64) => {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+      };
+      const stripData = (src) => (src || '').replace(/^data:image\/\w+;base64,/, '');
+
+      const manifest = {
+        payloadVersion: 'presentation-manifest-v1',
+        accession: 'TEST-SSOT',
+        presentationTitle: 'SSOT test',
+        studyLabel: 'TEST-SSOT',
+        sections: [{
+          id: 'finding-ssot', title: 'SSOT finding', text: 'single source of truth',
+          navigable: true, seriesNumber: 1, imageNumber: 1, speakerNotes: 'note',
+          imageEvidence: [{ status: 'captured', dataUrl: KNOWN_PNG }]
+        }]
+      };
+
+      const [previewMod, exporterMod] = await Promise.all([
+        import('/esm/lv/presentation/presentationPreview.mjs'),
+        import('/esm/lv/presentation/htmlPresentationExporter.mjs')
+      ]);
+
+      // 1. What the Preview Deck actually displays.
+      previewMod.openPresentationPreview(manifest, {});
+      const img = document.querySelector('[data-testid="preview-evidence-img"]');
+      const previewSrc = img?.getAttribute('src') || '';
+      const previewHash = await sha256(stripData(previewSrc));
+
+      // 2. What the HTML exporter embeds (data-url mode; dataUrl flows through directly).
+      const html = exporterMod.exportHtmlComposition(manifest, { assetMode: 'data-url' });
+      const m = html.match(/src="data:image\/png;base64,([^"]+)"/);
+      const htmlHash = m ? await sha256(m[1]) : null;
+
+      previewMod.closePresentationPreview();
+      return {
+        previewIsData: previewSrc.startsWith('data:'),
+        previewHash, htmlHash,
+        knownHash: await sha256(stripData(KNOWN_PNG))
+      };
+    }, KNOWN_PNG);
+
+    expect(result.previewIsData).toBe(true);
+    expect(result.previewHash).toBe(result.knownHash);
+    expect(result.htmlHash).toBe(result.knownHash);
+    expect(result.htmlHash).toBe(result.previewHash);
+  });
+});
+
 test.describe('CT Head exported evidence package', () => {
   // These tests validate the output of `npm run export:hyperframes:ct-head`.
   // They run against files on disk — no browser load needed.
@@ -701,7 +766,20 @@ test.describe('CT Head exported evidence package', () => {
     expect(meta.renderedFrameContainsImage).toBe(true);
   });
 
-  test('live-viewer-at-capture screenshots exist for each captured finding', () => {
+  test('render.json proves Preview Deck evidence hash matches HTML-embedded hash', () => {
+    test.skip(!fs.existsSync(renderMetaPath), 'render.json not yet generated — run npm run render:hyperframes:ct-head');
+    const meta = JSON.parse(fs.readFileSync(renderMetaPath, 'utf8'));
+    expect(Array.isArray(meta.evidenceProvenance)).toBe(true);
+    expect(meta.evidenceProvenance.length).toBeGreaterThan(0);
+    for (const p of meta.evidenceProvenance) {
+      expect(p.previewSha256, `finding ${p.finding} missing previewSha256`).toBeTruthy();
+      expect(p.htmlSha256, `finding ${p.finding} missing htmlSha256`).toBeTruthy();
+      expect(p.previewSha256, `finding ${p.finding} hash mismatch`).toBe(p.htmlSha256);
+      expect(p.match).toBe(true);
+    }
+  });
+
+  test('preview-deck screenshots exist for each captured finding', () => {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const capturedIdx = manifest.sections
       .map((s, i) => ({ i, has: (s.imageEvidence || []).some(e => e.status === 'captured') }))
@@ -709,9 +787,9 @@ test.describe('CT Head exported evidence package', () => {
       .map(x => x.i + 1);
     test.skip(capturedIdx.length === 0, 'no captured findings');
     for (const n of capturedIdx) {
-      const shot = path.join(debugDir, `live-viewer-before-capture-finding-${n}.png`);
-      // Live screenshots require the export to have run with a live viewer.
-      test.skip(!fs.existsSync(shot), `live-viewer screenshot ${n} not generated`);
+      const shot = path.join(debugDir, `preview-deck-finding-${n}.png`);
+      // Preview Deck screenshots require the export to have run with a live viewer.
+      test.skip(!fs.existsSync(shot), `preview-deck screenshot ${n} not generated`);
       expect(fs.statSync(shot).size).toBeGreaterThan(2000);
     }
   });
