@@ -14,8 +14,8 @@
 //   SummaryScene  one-line study summary, animated in
 //   FindingScene  (localized findings only) report sentence with a reading-sweep
 //                 highlight that hands off into the CT image; viewer-style framing,
-//                 finding-appropriate camera move, a pointer that pulses then fades,
-//                 and a minimal metadata card
+//                 a STATIC image (no camera movement — the anatomy never moves),
+//                 a pointer that appears/pulses/fades, and a minimal metadata card
 //   ClosingScene  impression bullets (staggered), gentle fade to black
 //
 // Data-driven scene selection: a finding gets an image scene only when it has
@@ -87,21 +87,16 @@ function windowLabel(section) {
   return WINDOW_LABELS[preset] || '';
 }
 
-// Finding-appropriate, subtle camera move. Origin follows the pointer when known
-// so a zoom pushes toward the lesion. Returns {fromVars, toVars}.
-function cameraMove(section) {
-  const kind = norm(section?.cameraKind) || 'zoom-soft';
+// Static vignette focus point (pointer when known, else centre). This is a fixed
+// gradient position — the anatomy never moves. There is deliberately NO camera
+// movement on radiology image scenes: a captured image is evidence and stays
+// perfectly stationary. (Real motion — cine through slices, viewport replay —
+// would be a distinct scene type representing an actual viewer interaction.)
+function vignetteOrigin(section) {
   const p = section?.pointer;
   const ox = (p && Number.isFinite(Number(p.x))) ? (Number(p.x) * 100).toFixed(1) : '50';
   const oy = (p && Number.isFinite(Number(p.y))) ? (Number(p.y) * 100).toFixed(1) : '45';
-  const origin = `${ox}% ${oy}%`;
-  switch (kind) {
-    case 'pan-up':   return { origin, from: 'scale: 1.06, yPercent: 4',  to: 'scale: 1.10, yPercent: -4' };
-    case 'still':    return { origin, from: 'scale: 1.015, yPercent: 0', to: 'scale: 1.04, yPercent: 0' };
-    case 'zoom':     return { origin, from: 'scale: 1.0, yPercent: 0',   to: 'scale: 1.15, yPercent: 0' };
-    case 'zoom-soft':
-    default:         return { origin, from: 'scale: 1.0, yPercent: 0',   to: 'scale: 1.08, yPercent: 0' };
-  }
+  return `${ox}% ${oy}%`;
 }
 
 // Wrap the first occurrence of `phrase` in `sentence` with a reading-sweep span.
@@ -167,12 +162,14 @@ export function buildTitleScene({ manifest, start, backdropUrl }) {
       <div style="margin-top:26px;text-align:center;">${metaRows}</div>
     </div>`;
 
+  // The blurred backdrop holds a fixed scale(1.15) to hide blur-edge bleed, but
+  // it is NOT animated — no push-in. Only the title text fades in.
   const tl = [
     `tl.to("#${id}", { opacity: 1, duration: 0.5 }, ${f2(start)});`,
     `tl.to("#${id}-body", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(start + 0.3)});`,
-    backdropUrl ? `tl.fromTo("#${id}-bg", { scale: 1.15 }, { scale: 1.24, duration: ${f2(dur)}, ease: "none" }, ${f2(start)});` : '',
     `tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + T.title)});`,
-  ].filter(Boolean);
+    `tl.set("#${id}", { opacity: 0 }, ${f2(start + T.title + T.xfade)});`,
+  ];
 
   return { html: clip(id, start, dur, inner), tl, duration: T.title + T.pause };
 }
@@ -193,6 +190,7 @@ export function buildSummaryScene({ summary, start }) {
     `tl.fromTo("#${id}-text", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 1.0, ease: "power2.out" }, ${f2(start + 0.3)});`,
     `tl.to("#${id}-rule", { width: 360, duration: 1.2, ease: "power2.out" }, ${f2(start + 0.8)});`,
     `tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + T.summary)});`,
+    `tl.set("#${id}", { opacity: 0 }, ${f2(start + T.summary + T.xfade)});`,
   ];
   return { html: clip(id, start, dur, inner), tl, duration: T.summary + T.pause };
 }
@@ -208,7 +206,7 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
   const pointer = section.pointer;
   const orientation = esc(norm(section.orientation));
   const winLabel = esc(windowLabel(section));
-  const cam = cameraMove(section);
+  const vOrigin = vignetteOrigin(section);
 
   const textDur = T.findingText + T.xfade;
   const imgStart = start + T.findingText - 0.35;   // image fades in underneath as phrase hands off
@@ -226,7 +224,7 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
     <div style="position:absolute;inset:36px;border:1px solid rgba(90,150,220,.10);border-radius:6px;
       box-shadow:0 30px 80px rgba(0,0,0,.55);pointer-events:none;"></div>
     <div style="position:absolute;inset:0;pointer-events:none;
-      background:radial-gradient(ellipse at ${cam.origin},transparent 42%,rgba(2,2,8,.55) 100%);"></div>`;
+      background:radial-gradient(ellipse at ${vOrigin},transparent 42%,rgba(2,2,8,.55) 100%);"></div>`;
   const orientLabel = orientation
     ? `<div style="position:absolute;top:52px;right:56px;font-family:monospace;font-size:13px;
         letter-spacing:.14em;color:#3a5575;opacity:.8;">${orientation}</div>`
@@ -259,9 +257,11 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
       ${winLabel ? `<div style="font-size:12px;color:#46587e;margin-top:${metaLines.length ? '6' : '0'}px;">${winLabel}</div>` : ''}
     </div>`;
 
+  // The image stage is completely static — no transform, no Ken Burns, no pan.
+  // A captured radiology image is evidence and must not move.
   const beatB = clip(idB, imgStart, imgDur, `
     <div style="position:absolute;inset:0;background:#04040a;"></div>
-    <div id="${idB}-stage" style="position:absolute;inset:0;transform-origin:${cam.origin};">
+    <div id="${idB}-stage" style="position:absolute;inset:0;">
       ${imagePanel}
       ${pointerHtml}
     </div>
@@ -288,11 +288,12 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
   // Hand-off: the phrase lifts and fades while the image cross-dissolves in underneath
   tl.push(`tl.to("#${idA}-wrap", { y: -60, scale: 0.92, opacity: 0, duration: ${f2(T.xfade + 0.2)}, ease: "power2.in" }, ${f2(imgStart - 0.1)});`);
   tl.push(`tl.to("#${idA}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`);
-  // Beat B: image in, Ken Burns (finding-appropriate), card rises, fade out
+  tl.push(`tl.set("#${idA}", { opacity: 0 }, ${f2(imgStart + T.xfade)});`);
+  // Beat B: image fades in (static — no camera move), card rises, fade out.
   tl.push(`tl.to("#${idB}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`);
-  tl.push(`tl.fromTo("#${idB}-stage", { ${cam.from} }, { ${cam.to}, duration: ${f2(imgDur)}, ease: "none" }, ${f2(imgStart)});`);
   tl.push(`tl.fromTo("#${idB}-card", { opacity: 0, y: 26 }, { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" }, ${f2(imgStart + 0.6)});`);
   tl.push(`tl.to("#${idB}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart + T.findingImage)});`);
+  tl.push(`tl.set("#${idB}", { opacity: 0 }, ${f2(imgStart + T.findingImage + T.xfade)});`);
 
   // Pointer: appear → expand → pulse twice → hold → fade away (all finite).
   if (pointer && imgUrl) {

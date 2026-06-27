@@ -141,16 +141,10 @@ export function deriveOrientation(finding) {
   return map[v] || '';
 }
 
-// ── Camera move kind ────────────────────────────────────────────────────────
-// Subtle, finding-appropriate motion. Focal lesions get a slow zoom; fractures a
-// gentle upward pan; diffuse processes almost no movement. Renderer-agnostic hint.
-export function deriveCameraKind(finding) {
-  const hay = `${pick(finding, 'label')} ${pick(finding, 'disease')} ${pick(finding, 'description', 'rawText')} ${pick(finding, 'severity')}`.toLowerCase();
-  if (/fracture|calvari|vertex|osseous|cortical|bony/.test(hay)) return 'pan-up';
-  if (/effusion|edema|oedema|atroph|diffuse|volume|encephalomalacia|generalized/.test(hay)) return 'still';
-  if (/infarct|lesion|nodule|mass|tumou?r|focal|hemorrhage|haematoma|hematoma/.test(hay)) return 'zoom';
-  return 'zoom-soft';
-}
+// NOTE: there is intentionally no camera-movement heuristic. Radiology image
+// scenes are completely static (the image is evidence). Motion that represents a
+// real viewer interaction — cine through slices, viewport replay — would be a
+// distinct scene type, not an automatic Ken Burns effect.
 
 // True when the finding carries an image localization (series + image).
 export function hasLocalization(finding) {
@@ -198,7 +192,6 @@ export function buildStoryboard({ modality, accession, positiveFindings = [], ne
       highlightPhrase: deriveHighlightPhrase(f, sentence),
       pointer: derivePointer(f),
       orientation: deriveOrientation(f),
-      cameraKind: deriveCameraKind(f),
       localized: hasLocalization(f),
       narration: findingNarration(f, sentence),
     };

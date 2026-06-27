@@ -107,6 +107,30 @@ test('exportHtmlComposition emits cinematic scenes for localized findings, deter
   assert.match(html, /#00d4e8/);
 });
 
+test('image scenes are completely static — no camera movement on the anatomy', () => {
+  const ctx = { source: 'demo', accession: 'NI9f7ff9', modality: 'CT',
+    positiveFindings: CT_POSITIVE, negativeFindings: CT_NEGATIVE };
+  const m = buildPresentationManifest(ctx, { evidenceMap: evidenceMapFor(CT_POSITIVE) });
+  const html = exportHtmlComposition(m, { assetMode: 'data-url' });
+
+  // Only the GSAP timeline block can introduce motion — inspect it.
+  const tl = html.slice(html.indexOf('gsap.timeline'));
+
+  // No tween targets the image, the image stage, or the title backdrop.
+  assert.ok(!/tl\.\w+\("#[^"]*-img"/.test(tl), 'the evidence image must not be animated');
+  assert.ok(!/tl\.\w+\("#[^"]*-stage"/.test(tl), 'the image stage must not be animated');
+  assert.ok(!/tl\.\w+\("#[^"]*-bg"/.test(tl), 'the title backdrop must not be animated (no push-in)');
+
+  // No Ken Burns: the image stage has no transform / transform-origin.
+  assert.ok(!/-stage"[^>]*transform/.test(html), 'image stage must have no transform');
+
+  // Overlay animations still function: pointer + card + report sweep are present.
+  assert.match(tl, /-ptr"/);     // pointer appears/fades
+  assert.match(tl, /-ring"/);    // pointer pulse
+  assert.match(tl, /-card"/);    // metadata card fades in
+  assert.match(tl, /-hl"/);      // report reading-sweep
+});
+
 test('data-driven scene selection: non-localized findings get no image scene', () => {
   const NON_LOCALIZED = { id: 'chondromalacia-patella', label: 'Chondromalacia patella',
     description: 'Mild chondromalacia patella', anatomy: 'patella', disease: 'chondromalacia',

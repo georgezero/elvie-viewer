@@ -113,19 +113,23 @@ as new segment types without redesign.
 | `brandLayer`   | persistent | ELVIE wordmark (viewer styling: Bebas Neue, cyan `#00d4e8`, 0.12em), upper-left, ~45% opacity, never animated |
 | `TitleScene`   | 3s | exam name, accession, study date, indication over a blurred/darkened CT backdrop with a slow push-in |
 | `SummaryScene` | 4s | one-line AI study summary, animated in with an accent rule |
-| `FindingScene` × N | 9s each | **beat A**: report sentence with a reading-sweep highlight on the key phrase, which lifts and hands off into the image; **beat B**: cross-dissolve to the captured image with viewer-style framing (faint border, vignette, gentle shadow, optional orientation label), a finding-appropriate camera move, a pointer that appears → pulses twice → fades, and a minimal metadata card. Image fills ~75% of the frame. |
+| `FindingScene` × N | 9s each | **beat A**: report sentence with a reading-sweep highlight on the key phrase, which lifts and hands off into the image; **beat B**: cross-dissolve to the captured image with viewer-style framing (faint border, vignette, gentle shadow, optional orientation label), a pointer that appears → pulses twice → fades, and a minimal metadata card. Image fills ~75% of the frame. |
 | `ClosingScene` | 5s | impression bullets animated individually, gentle fade to black |
 
 Brief pauses sit between scenes so future narration has room. Transitions are
 fades / cross-dissolves — no hard cuts. CT Head (2 image scenes) ≈ 34s.
 
-**Camera move** is derived from the finding (focal lesion → slow zoom toward the
-lesion; fracture → upward pan; diffuse process → almost still). **Pointer**
-positions come from `finding.localization` when available, else hand-placed
-`DEMO_POINTERS` — future AI localization drops in unchanged.
+**The radiology image is completely static** — no Ken Burns, zoom, pan, drift, or
+scaling. A captured image is evidence and is treated as stable. The only animated
+elements during an image scene are the overlays (pointer appear/pulse/fade,
+metadata card fade, and the report-text hand-off). Real motion — cine through
+slices or viewport replay — would be a distinct scene type representing an actual
+viewer interaction, not an automatic camera effect. **Pointer** positions come
+from `finding.localization` when available, else hand-placed `DEMO_POINTERS` —
+future AI localization drops in unchanged.
 
 The storyboard text (summary, impression, per-finding highlight phrase, pointer,
-orientation, camera kind, narration) is generated deterministically in
+orientation, narration) is generated deterministically in
 `presentationStoryboard.mjs` and stored on the manifest.
 
 **Narration (no TTS yet):** every scene gets a plain-text `narration` segment in
