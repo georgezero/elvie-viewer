@@ -245,29 +245,32 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
 
   // ── Left narrative panel (38% width) ─────────────────────────────────────────
   // Full-height glass panel: finding title, series/image coordinates, radiologist
-  // description, and optional patient-friendly explanation. Designed to
-  // accommodate multi-line clinical findings without shrinking font or layout.
+  // description, and optional patient-friendly explanation.
+  // Typography targets 1080p legibility for elderly patients on tablets / across room:
+  //   title 44px · metadata 20px · body 30px · patient 32px · nothing below 18px.
+  // Long text is clamped rather than scaled so normal findings stay large.
   const leftPanel = `
     <div id="${idB}-panel" style="position:absolute;left:0;top:0;bottom:0;width:38%;
       background:rgba(6,8,18,.65);backdrop-filter:blur(14px);
       border-right:1px solid rgba(70,90,140,.18);overflow:hidden;opacity:0;">
       <div style="position:absolute;inset:0;display:flex;flex-direction:column;
-        justify-content:center;padding:52px 40px 52px 52px;overflow:hidden;">
-        <div style="font-size:11px;color:#3a5080;text-transform:uppercase;
-          letter-spacing:.28em;margin-bottom:16px;">Finding ${findingNumber}</div>
-        <div style="font-size:24px;font-weight:600;color:#eef3ff;line-height:1.3;
-          margin-bottom:${metaLines.length || winLabel ? '12px' : '22px'};">${title}</div>
-        ${metaLines.length ? `<div style="font-family:monospace;font-size:13px;color:#8fb0dd;letter-spacing:.02em;
-          margin-bottom:${winLabel ? '8px' : '22px'};">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
-        ${winLabel ? `<div style="font-size:11px;color:#46587e;margin-bottom:22px;">${winLabel}</div>` : ''}
-        <div style="width:32px;height:1px;background:rgba(70,90,140,.35);margin-bottom:22px;flex-shrink:0;"></div>
-        ${findingBodyText ? `<div style="font-size:15px;color:#b8c8e0;line-height:1.70;
-          margin-bottom:${patientText ? '28px' : '0'};flex-shrink:0;">${esc(findingBodyText)}</div>` : ''}
+        justify-content:center;padding:52px 44px 52px 56px;overflow:hidden;">
+        <div style="font-size:18px;color:#3a5080;text-transform:uppercase;
+          letter-spacing:.20em;margin-bottom:16px;flex-shrink:0;">Finding ${findingNumber}</div>
+        <div style="font-size:44px;font-weight:700;color:#eef3ff;line-height:1.2;
+          margin-bottom:${metaLines.length || winLabel ? '18px' : '28px'};flex-shrink:0;">${title}</div>
+        ${metaLines.length ? `<div style="font-family:monospace;font-size:20px;color:#a0bcd8;letter-spacing:.02em;
+          margin-bottom:${winLabel ? '10px' : '28px'};flex-shrink:0;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+        ${winLabel ? `<div style="font-size:18px;color:#6080a0;margin-bottom:28px;flex-shrink:0;">${winLabel}</div>` : ''}
+        <div style="width:40px;height:1px;background:rgba(80,110,160,.45);margin-bottom:28px;flex-shrink:0;"></div>
+        ${findingBodyText ? `<div style="font-size:30px;color:#d8e8f8;line-height:1.55;
+          margin-bottom:${patientText ? '32px' : '0'};flex-shrink:0;
+          display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;">${esc(findingBodyText)}</div>` : ''}
         ${patientText ? `
-          <div style="font-size:11px;color:#2b3f5c;text-transform:uppercase;letter-spacing:.22em;
-            margin-bottom:10px;flex-shrink:0;">For patients</div>
-          <div style="font-size:14px;color:#556b80;line-height:1.70;font-style:italic;
-            flex-shrink:0;">${esc(patientText)}</div>` : ''}
+          <div style="font-size:18px;color:#3a5080;text-transform:uppercase;letter-spacing:.18em;
+            margin-bottom:14px;flex-shrink:0;">For patients</div>
+          <div style="font-size:32px;color:#d8e8f8;line-height:1.50;flex-shrink:0;
+            display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;">${esc(patientText)}</div>` : ''}
       </div>
     </div>`;
 
