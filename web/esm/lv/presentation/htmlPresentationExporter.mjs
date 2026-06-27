@@ -10,13 +10,16 @@
 // narrated playback) can be added as new scene/segment types without redesign.
 //
 //   brandLayer    persistent ELVIE wordmark (viewer styling, never animated)
-//   TitleScene    exam name, accession, indication over a blurred CT backdrop
+//   TitleScene    exam name, accession, indication; backdrop slow-dissolves between
+//                 blurred evidence slices; thin accent rule draws left→right
 //   SummaryScene  one-line study summary, animated in
 //   FindingScene  (localized findings only) report sentence with a reading-sweep
-//                 highlight that hands off into the CT image; viewer-style framing,
-//                 a STATIC image (no camera movement — the anatomy never moves),
-//                 a pointer that appears/pulses/fades, and a minimal metadata card
-//   ClosingScene  impression bullets (staggered), gentle fade to black
+//                 highlight that hands off into the CT image; 38/62 split: left glass
+//                 panel (title, meta, description, patient explanation) + right static
+//                 image with pointer ring; no camera movement
+//   ClosingScene  impression bullets staggered one-at-a-time, then cross-dissolves
+//                 into the ELVIE end card
+//   EndCardScene  ELVIE wordmark centered, fades to black
 //
 // Data-driven scene selection: a finding gets an image scene only when it has
 // captured image evidence. Non-localized positives are still represented in the
@@ -28,13 +31,14 @@
 
 // ── Scene timing (seconds) ──────────────────────────────────────────────────
 const T = {
-  title:        3.2,
+  title:        5.0,   // extended for backdrop cross-dissolve
   summary:      4.2,
   findingText:  4.2,   // beat A — report sentence
   findingImage: 6.2,   // beat B — CT image + pointer + metadata
-  closing:      6.2,
+  closing:      6.2,   // dynamic — extends if many impression bullets
+  endCard:      3.2,   // ELVIE end card hold
   xfade:        0.8,   // cross-dissolve overlap
-  pause:        0.45,  // brief hold between scenes (room for future narration)
+  pause:        0.45,  // brief hold between scenes
 };
 
 // ELVIE wordmark — matched to the viewer (.lv-logo): Bebas Neue, cyan #00d4e8,
@@ -129,7 +133,7 @@ ${inner}
 
 // ── Scene builders — each returns { html, tl: string[], duration } ───────────
 
-export function buildTitleScene({ manifest, start, backdropUrl }) {
+export function buildTitleScene({ manifest, start, backdropUrls = [] }) {
   const study = manifest.study || {};
   const exam = esc(norm(study.examName) || norm(manifest.presentationTitle) || 'STUDY');
   const acc = esc(norm(study.accession || manifest.accession));
@@ -138,34 +142,57 @@ export function buildTitleScene({ manifest, start, backdropUrl }) {
   const dur = T.title + T.xfade;
   const id = 'sc-title';
 
-  const backdrop = backdropUrl
-    ? `<div id="${id}-bg" style="position:absolute;inset:0;background-image:url('${esc(backdropUrl)}');
-         background-size:cover;background-position:center;filter:blur(26px) brightness(.26) saturate(.6);transform:scale(1.15);"></div>
-       <div style="position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(6,6,16,.5) 0%,rgba(4,4,12,.93) 80%);"></div>`
+  // ── Background: slow cross-dissolve between blurred study slices ─────────────
+  // Each evidence image becomes a full-frame blurred layer. Opacity cross-fades
+  // slowly over 2s — viewer barely perceives motion but the frame feels alive.
+  // Backdrop layers are NOT scaled or translated (no push-in, no Ken Burns).
+  const bdLayers = backdropUrls.length > 0
+    ? backdropUrls.map((url, i) => `
+      <div id="${id}-bd${i}" style="position:absolute;inset:0;
+        background-image:url('${esc(url)}');background-size:cover;background-position:center;
+        filter:blur(28px) brightness(.20) saturate(.45);transform:scale(1.18);
+        opacity:${i === 0 ? '1' : '0'};"></div>`).join('')
     : `<div style="position:absolute;inset:0;background:linear-gradient(135deg,#06060f 0%,#0c0c1e 60%,#0a0a18 100%);"></div>`;
+
+  // Dark radial vignette over all backdrop layers, focusing eye on the centre.
+  const vignette = backdropUrls.length > 0
+    ? `<div style="position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(6,6,16,.55) 0%,rgba(4,4,12,.92) 80%);"></div>`
+    : '';
 
   const metaRows = [
     acc ? `Accession ${acc}` : '',
     date ? `Study date ${esc(date)}` : '',
     indication ? `Indication: ${esc(indication)}` : '',
   ].filter(Boolean).map(r =>
-    `<div style="font-size:18px;color:#5b6f9c;letter-spacing:.04em;margin-top:8px;">${r}</div>`
+    `<div style="font-size:30px;color:#5b6f9c;letter-spacing:.04em;margin-top:16px;">${r}</div>`
   ).join('');
 
   const inner = `
-    ${backdrop}
+    ${bdLayers}
+    ${vignette}
     <div id="${id}-body" style="position:absolute;inset:0;display:flex;flex-direction:column;
       align-items:center;justify-content:center;opacity:0;">
-      <div style="font-size:84px;font-weight:700;color:#eef3ff;letter-spacing:.01em;text-align:center;
-        line-height:1.05;text-shadow:0 2px 40px rgba(0,0,0,.6);">${exam}</div>
-      <div style="margin-top:26px;text-align:center;">${metaRows}</div>
+      <div style="font-size:96px;font-weight:700;color:#eef3ff;letter-spacing:.02em;text-align:center;
+        line-height:1.05;text-shadow:0 4px 48px rgba(0,0,0,.7);">${exam}</div>
+      <div id="${id}-rule" style="width:0;height:1.5px;margin-top:30px;
+        background:linear-gradient(90deg,rgba(0,212,232,.55),rgba(0,212,232,.08));"></div>
+      <div id="${id}-meta" style="margin-top:12px;text-align:center;opacity:0;">${metaRows}</div>
     </div>`;
 
-  // The blurred backdrop holds a fixed scale(1.15) to hide blur-edge bleed, but
-  // it is NOT animated — no push-in. Only the title text fades in.
   const tl = [
     `tl.to("#${id}", { opacity: 1, duration: 0.5 }, ${f2(start)});`,
-    `tl.to("#${id}-body", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(start + 0.3)});`,
+    // Title fades in first
+    `tl.to("#${id}-body", { opacity: 1, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.2)});`,
+    // Accent rule draws left→right
+    `tl.to("#${id}-rule", { width: 200, duration: 0.8, ease: "power2.out" }, ${f2(start + 0.55)});`,
+    // Metadata fades in ~200ms after rule starts
+    `tl.to("#${id}-meta", { opacity: 1, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.75)});`,
+    // Backdrop: slow cross-dissolve between slices (if multiple images available)
+    ...(backdropUrls.length > 1
+      ? [`tl.to("#${id}-bd0", { opacity: 0, duration: 2.0, ease: "power1.inOut" }, ${f2(start + 1.8)});`,
+         `tl.to("#${id}-bd1", { opacity: 1, duration: 2.0, ease: "power1.inOut" }, ${f2(start + 1.8)});`]
+      : []),
+    // Scene exit
     `tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + T.title)});`,
     `tl.set("#${id}", { opacity: 0 }, ${f2(start + T.title + T.xfade)});`,
   ];
@@ -244,32 +271,31 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
   const patientText = norm(section.patientFriendlyExplanation);
 
   // ── Left narrative panel (38% width) ─────────────────────────────────────────
-  // Full-height glass panel: finding title, series/image coordinates, radiologist
-  // description, and optional patient-friendly explanation.
-  // Typography targets 1080p legibility for elderly patients on tablets / across room:
-  //   title 44px · metadata 20px · body 30px · patient 32px · nothing below 18px.
-  // Long text is clamped rather than scaled so normal findings stay large.
+  // Full-height glass panel. Typography for 1080p legibility at tablet distance:
+  //   title 48px · metadata 22px · body 33px · patient 35px · nothing below 18px.
+  // Long findings: body clamped at 4 lines, patient at 3 lines — normal slides
+  // always render at the large sizes above.
   const leftPanel = `
     <div id="${idB}-panel" style="position:absolute;left:0;top:0;bottom:0;width:38%;
       background:rgba(6,8,18,.65);backdrop-filter:blur(14px);
       border-right:1px solid rgba(70,90,140,.18);overflow:hidden;opacity:0;">
       <div style="position:absolute;inset:0;display:flex;flex-direction:column;
-        justify-content:center;padding:52px 44px 52px 56px;overflow:hidden;">
+        justify-content:center;padding:52px 48px 52px 60px;overflow:hidden;">
         <div style="font-size:18px;color:#3a5080;text-transform:uppercase;
-          letter-spacing:.20em;margin-bottom:16px;flex-shrink:0;">Finding ${findingNumber}</div>
-        <div style="font-size:44px;font-weight:700;color:#eef3ff;line-height:1.2;
-          margin-bottom:${metaLines.length || winLabel ? '18px' : '28px'};flex-shrink:0;">${title}</div>
-        ${metaLines.length ? `<div style="font-family:monospace;font-size:20px;color:#a0bcd8;letter-spacing:.02em;
-          margin-bottom:${winLabel ? '10px' : '28px'};flex-shrink:0;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
-        ${winLabel ? `<div style="font-size:18px;color:#6080a0;margin-bottom:28px;flex-shrink:0;">${winLabel}</div>` : ''}
-        <div style="width:40px;height:1px;background:rgba(80,110,160,.45);margin-bottom:28px;flex-shrink:0;"></div>
-        ${findingBodyText ? `<div style="font-size:30px;color:#d8e8f8;line-height:1.55;
-          margin-bottom:${patientText ? '32px' : '0'};flex-shrink:0;
+          letter-spacing:.20em;margin-bottom:18px;flex-shrink:0;">Finding ${findingNumber}</div>
+        <div style="font-size:48px;font-weight:700;color:#eef3ff;line-height:1.2;
+          margin-bottom:${metaLines.length || winLabel ? '20px' : '32px'};flex-shrink:0;">${title}</div>
+        ${metaLines.length ? `<div style="font-family:monospace;font-size:22px;color:#a0bcd8;letter-spacing:.02em;
+          margin-bottom:${winLabel ? '10px' : '32px'};flex-shrink:0;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+        ${winLabel ? `<div style="font-size:20px;color:#6080a0;margin-bottom:32px;flex-shrink:0;">${winLabel}</div>` : ''}
+        <div style="width:40px;height:1px;background:rgba(80,110,160,.45);margin-bottom:34px;flex-shrink:0;"></div>
+        ${findingBodyText ? `<div style="font-size:33px;color:#d8e8f8;line-height:1.55;
+          margin-bottom:${patientText ? '36px' : '0'};flex-shrink:0;
           display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;">${esc(findingBodyText)}</div>` : ''}
         ${patientText ? `
           <div style="font-size:18px;color:#3a5080;text-transform:uppercase;letter-spacing:.18em;
             margin-bottom:14px;flex-shrink:0;">For patients</div>
-          <div style="font-size:32px;color:#d8e8f8;line-height:1.50;flex-shrink:0;
+          <div style="font-size:35px;color:#d8e8f8;line-height:1.50;flex-shrink:0;
             display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;">${esc(patientText)}</div>` : ''}
       </div>
     </div>`;
@@ -331,29 +357,64 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
 
 export function buildClosingScene({ impression, start }) {
   const id = 'sc-closing';
-  const dur = T.closing + 0.8;
   const items = Array.isArray(impression) ? impression : [];
+
+  // Each bullet appears individually with a clear pause before the next.
+  const staggerGap  = 1.4;   // seconds between each bullet appearance
+  const bulletFade  = 0.65;  // fade-in duration per bullet
+  const holdAfterLast = 1.0; // hold after final bullet before scene exits
+  // Extend beyond T.closing if there are many bullets.
+  const activeDur = 0.5 + items.length * staggerGap + holdAfterLast;
+  const closingDur = Math.max(T.closing, activeDur);
+  const dur = closingDur + T.xfade;
+
   const bullets = items.map((b, i) => `
-    <div id="${id}-b${i}" style="display:flex;align-items:flex-start;gap:18px;opacity:0;margin-bottom:22px;">
-      <div style="width:9px;height:9px;border-radius:50%;background:#5a9aff;margin-top:18px;flex:0 0 auto;box-shadow:0 0 12px rgba(90,160,255,.6);"></div>
-      <div style="font-size:38px;color:#dfe7fb;line-height:1.3;">${esc(norm(b))}</div>
+    <div id="${id}-b${i}" style="display:flex;align-items:flex-start;gap:28px;
+      opacity:0;margin-bottom:44px;">
+      <div style="width:12px;height:12px;border-radius:50%;background:#5a9aff;
+        margin-top:24px;flex:0 0 auto;box-shadow:0 0 16px rgba(90,160,255,.7);"></div>
+      <div style="font-size:52px;font-weight:600;color:#e8eefa;line-height:1.3;">${esc(norm(b))}</div>
     </div>`).join('');
 
   const inner = `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#070712 0%,#090916 100%);"></div>
-    <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 200px;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:38px;">Impression</div>
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+      justify-content:center;padding:0 180px;">
       ${bullets}
-    </div>
-    <div id="${id}-fade" style="position:absolute;inset:0;background:#000;opacity:0;"></div>`;
+    </div>`;
 
   const tl = [`tl.to("#${id}", { opacity: 1, duration: 0.6 }, ${f2(start)});`];
+  // Bullets appear one at a time — each fades in individually.
   items.forEach((_, i) => {
-    tl.push(`tl.fromTo("#${id}-b${i}", { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.6 + i * 0.55)});`);
+    tl.push(`tl.to("#${id}-b${i}", { opacity: 1, duration: ${f2(bulletFade)}, ease: "power2.out" }, ${f2(start + 0.5 + i * staggerGap)});`);
   });
-  tl.push(`tl.to("#${id}-fade", { opacity: 1, duration: 1.1, ease: "power2.in" }, ${f2(start + T.closing - 0.3)});`);
+  // Scene exits cleanly — cross-dissolves into the ELVIE end card.
+  tl.push(`tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + closingDur)});`);
+  tl.push(`tl.set("#${id}", { opacity: 0 }, ${f2(start + closingDur + T.xfade)});`);
 
-  return { html: clip(id, start, dur, inner), tl, duration: T.closing };
+  return { html: clip(id, start, dur, inner), tl, duration: closingDur + T.pause };
+}
+
+export function buildEndCardScene({ start }) {
+  const id = 'sc-endcard';
+  const dur = T.endCard + T.xfade;
+
+  const inner = `
+    <div style="position:absolute;inset:0;background:#04040a;"></div>
+    <div id="${id}-wordmark" style="position:absolute;inset:0;display:flex;align-items:center;
+      justify-content:center;opacity:0;">
+      <div style="font-family:${BRAND.font};font-size:120px;letter-spacing:0.10em;
+        color:${BRAND.color};line-height:1;">${BRAND.text.toUpperCase()}</div>
+    </div>`;
+
+  const tl = [
+    `tl.to("#${id}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(start)});`,
+    `tl.to("#${id}-wordmark", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(start + 0.4)});`,
+    `tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + T.endCard)});`,
+    `tl.set("#${id}", { opacity: 0 }, ${f2(start + T.endCard + T.xfade)});`,
+  ];
+
+  return { html: clip(id, start, dur, inner), tl, duration: T.endCard + T.pause };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -377,18 +438,22 @@ export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-
     .map((section, idx) => ({ section, findingNumber: idx + 1 }))
     .filter(({ section }) => sectionHasImage(section));
 
-  const backdropUrl = imageSections.map(({ section }) => resolveEvidenceUrl(section, resolveOpts)).find(Boolean) || null;
+  // All evidence URLs — used for the title backdrop cross-dissolve.
+  const backdropUrls = imageSections
+    .map(({ section }) => resolveEvidenceUrl(section, resolveOpts))
+    .filter(Boolean);
 
   const scenes = [];
   let cursor = 0;
   const advance = (scene) => { scenes.push(scene); cursor += scene.duration; };
 
-  advance(buildTitleScene({ manifest, start: cursor, backdropUrl }));
+  advance(buildTitleScene({ manifest, start: cursor, backdropUrls }));
   advance(buildSummaryScene({ summary: manifest.summary, start: cursor }));
   imageSections.forEach(({ section, findingNumber }, sceneIndex) => {
     advance(buildFindingScene({ section, findingNumber, sceneIndex, start: cursor, resolveOpts }));
   });
   advance(buildClosingScene({ impression: manifest.impression, start: cursor }));
+  advance(buildEndCardScene({ start: cursor }));
 
   const totalDuration = Math.ceil(cursor + 0.5);
   const clipsHtml = scenes.map(s => s.html).join('\n');

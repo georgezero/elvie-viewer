@@ -95,7 +95,7 @@ test('exportHtmlComposition emits cinematic scenes for localized findings, deter
     positiveFindings: CT_POSITIVE, negativeFindings: CT_NEGATIVE };
   const m = buildPresentationManifest(ctx, { evidenceMap: evidenceMapFor(CT_POSITIVE) });
   const html = exportHtmlComposition(m, { assetMode: 'data-url' });
-  for (const id of ['sc-title', 'sc-summary', 'sc-find-0-a', 'sc-find-0-b', 'sc-find-1-b', 'sc-closing']) {
+  for (const id of ['sc-title', 'sc-summary', 'sc-find-0-a', 'sc-find-0-b', 'sc-find-1-b', 'sc-closing', 'sc-endcard']) {
     assert.ok(html.includes(id), `composition should contain ${id}`);
   }
   // No infinite GSAP repeats (HyperFrames requires deterministic finite repeats).
