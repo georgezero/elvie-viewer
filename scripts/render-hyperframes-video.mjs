@@ -375,8 +375,18 @@ if (mp4Exists && inputImageOk) {
 
 // ── 6. Write render metadata ───────────────────────────────────────────────────
 
-writeFileSync(resolve(projectDir, 'render.json'), JSON.stringify({
+const renderedAt = new Date().toISOString();
+const mp4Version = mp4Sha256 ? mp4Sha256.slice(0, 12) : null;
+// Serve path (relative to the static root) — used by the Preview Deck to build
+// a cache-busted URL without knowing the filesystem layout.
+const servedMp4Path = presentationStyle !== 'v1'
+  ? `/generated/hyperframes/${accession}-${presentationStyle}/renders/${accession}${styleSuffix}.mp4`
+  : `/generated/hyperframes/${accession}/renders/${accession}.mp4`;
+
+// Per-style render.json in compositionDir (one file per project directory).
+writeFileSync(resolve(compositionDir, 'render.json'), JSON.stringify({
   status: mp4Exists ? 'complete' : 'failed',
+  presentationStyle,
   target: targetName, accession,
   manifestVersion: manifest.payloadVersion,
   presentationTitle: manifest.presentationTitle,
@@ -390,13 +400,32 @@ writeFileSync(resolve(projectDir, 'render.json'), JSON.stringify({
   renderInputScreenshot: renderInputShot,
   renderInputImageDecoded: inputImageOk,
   outputPath,
+  servedMp4Path,
   renderedFrameScreenshot: existsSync(renderedFrameShot) ? renderedFrameShot : null,
   renderedFrameContainsImage: frameHasImage,
-  renderedAt: new Date().toISOString(),
+  renderedAt,
   mp4SizeKB: mp4Exists ? Math.round(mp4Bytes / 1024) : null,
   mp4Sha256,
-  mp4Version: mp4Sha256 ? mp4Sha256.slice(0, 12) : null,
+  mp4Version,
 }, null, 2));
+
+// renders.json — shared style index in projectDir (V1 base directory).
+// The Preview Deck reads this one file to resolve all available styles.
+const rendersJsonPath = resolve(projectDir, 'renders.json');
+let rendersIndex = {};
+try { rendersIndex = JSON.parse(readFileSync(rendersJsonPath, 'utf8')); } catch { /* first run */ }
+if (!rendersIndex.styles) rendersIndex.styles = {};
+rendersIndex.accession = accession;
+rendersIndex.updatedAt = renderedAt;
+rendersIndex.styles[presentationStyle] = {
+  status: mp4Exists ? 'complete' : 'failed',
+  renderedAt,
+  mp4SizeKB: mp4Exists ? Math.round(mp4Bytes / 1024) : null,
+  mp4Sha256,
+  mp4Version,
+  servedMp4Path,
+};
+writeFileSync(rendersJsonPath, JSON.stringify(rendersIndex, null, 2));
 
 // ── 7. Report ──────────────────────────────────────────────────────────────────
 

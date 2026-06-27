@@ -93,38 +93,51 @@ function transportNoteHtml(manifestUrl) {
     ${esc(msg)}</div>`;
 }
 
-// Generic MP4 action — data-driven, no study/modality-specific logic.
-// videoState: { canRender, status: 'none'|'rendering'|'complete'|'failed', videoUrl }
-function mp4StatusHtml(videoState = {}) {
-  const { canRender = false, status = 'none', videoUrl = null } = videoState;
-  const btn = (testid, label, bg, border, color, attrs = '') =>
-    `<button data-testid="${testid}" ${attrs}
-      style="display:inline-flex;align-items:center;gap:8px;margin-top:10px;
-             background:${bg};border:1px solid ${border};color:${color};
-             border-radius:5px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;">${label}</button>`;
+// Style-aware MP4 playback row — shows one button per known style (V1, V2).
+// videoStates: { v1: { status, videoUrl, canRender }, v2: { status, videoUrl, canRender } }
+// Backwards-compatible: if videoStates is missing but videoState is present, maps it to v1.
+function mp4ButtonsHtml(videoStates = {}) {
+  function styleChip(style, state = {}) {
+    const { status = 'none', videoUrl = null, canRender = false } = state;
+    const tag = style.toUpperCase();
+    const baseStyle =
+      'display:inline-flex;align-items:center;gap:6px;border-radius:5px;' +
+      'padding:7px 13px;font-size:13px;font-weight:600;';
 
-  if (status === 'complete' && videoUrl) {
-    return `<a data-testid="preview-mp4-link" href="${esc(videoUrl)}" target="_blank" rel="noopener"
-      style="display:inline-flex;align-items:center;gap:8px;margin-top:10px;
-             background:#0b2a16;border:1px solid #1f6b3a;color:#4ade80;
-             border-radius:5px;padding:8px 16px;font-size:13px;font-weight:600;
-             text-decoration:none;">&#9654; Watch rendered MP4</a>`;
+    if (status === 'complete' && videoUrl) {
+      return `<a data-testid="preview-mp4-${style}-link" href="${esc(videoUrl)}"
+        target="_blank" rel="noopener"
+        style="${baseStyle}background:#0b2a16;border:1px solid #1f6b3a;color:#4ade80;
+               text-decoration:none;">&#9654; Play ${tag}</a>`;
+    }
+    if (status === 'rendering') {
+      return `<button disabled data-testid="preview-mp4-${style}-rendering"
+        style="${baseStyle}background:#16203a;border:1px solid #243a66;color:#7f93bd;
+               cursor:not-allowed;">&#8987; ${tag} rendering…</button>`;
+    }
+    if (status === 'failed') {
+      return `<button data-testid="preview-retry-${style}-btn"
+        style="${baseStyle}background:#2a1414;border:1px solid #5a2a2a;color:#f0a0a0;
+               cursor:pointer;">&#8635; Retry ${tag}</button>`;
+    }
+    if (canRender) {
+      return `<button data-testid="preview-create-${style}-btn"
+        style="${baseStyle}background:#0d1e33;border:1px solid #2d4fa8;color:#93c5fd;
+               cursor:pointer;">&#9654; Create ${tag} (MP4)</button>`;
+    }
+    return `<span data-testid="preview-mp4-${style}-missing"
+      style="font-size:11px;color:#4a5070;line-height:1.5;padding:2px 0;">
+      ${tag}: not rendered &mdash;
+      <code style="color:#6a7a9a;">--style ${style}</code></span>`;
   }
-  if (status === 'rendering') {
-    return btn('preview-mp4-rendering', 'Rendering video…', '#16203a', '#243a66', '#7f93bd', 'disabled');
-  }
-  if (status === 'failed') {
-    return btn('preview-retry-video-btn', '↻ Retry rendering', '#2a1414', '#5a2a2a', '#f0a0a0');
-  }
-  if (canRender) {
-    return btn('preview-create-video-btn', '&#9654; Create Video (MP4)', '#0d1e33', '#2d4fa8', '#93c5fd');
-  }
-  return `<div data-testid="preview-mp4-status"
-    style="font-size:11px;color:#5b6b8c;margin-top:10px;line-height:1.6;">
-    No image evidence available to render a video.</div>`;
+
+  const chips = [styleChip('v1', videoStates.v1), styleChip('v2', videoStates.v2)].join('\n');
+  return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+    ${chips}
+  </div>`;
 }
 
-function slideHtml(manifest, section, idx, total, { manifestUrl, videoState, hasExport }) {
+function slideHtml(manifest, section, idx, total, { manifestUrl, videoStates, hasExport }) {
   const loc = section.navigable
     ? `<div data-testid="preview-location"
         style="font-size:12px;color:#7ab8f5;margin-bottom:10px;">
@@ -206,13 +219,13 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, videoState, has
     </div>
     ${exportBtn}
   </div>
-  ${mp4StatusHtml(videoState)}
+  ${mp4ButtonsHtml(videoStates)}
   ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
 </div>`;
 }
 
-function emptyHtml(manifest, { manifestUrl, videoState, hasExport }) {
+function emptyHtml(manifest, { manifestUrl, videoStates, hasExport }) {
   const exportBtn = hasExport
     ? `<button data-testid="preview-export-btn"
         style="background:#1a1a30;border:1px solid #3a3a54;color:#aab;
@@ -239,7 +252,7 @@ function emptyHtml(manifest, { manifestUrl, videoState, hasExport }) {
       Close</button>
     ${exportBtn}
   </div>
-  ${mp4StatusHtml(videoState)}
+  ${mp4ButtonsHtml(videoStates)}
   ${integrationStatusHtml()}
   ${transportNoteHtml(manifestUrl)}
 </div>`;
@@ -256,9 +269,10 @@ function emptyHtml(manifest, { manifestUrl, videoState, hasExport }) {
  * @param {function} [options.onExport]      - called when "Export package" is clicked
  * @param {function} [options.onCreateVideo] - called when "Create Video (MP4)" / "Retry" is clicked
  * @param {string}   [options.manifestUrl]   - published manifest URL for transport status note
- * @param {object}   [options.videoState]    - { canRender, status, videoUrl } generic MP4 state
+ * @param {object}   [options.videoStates]   - { v1: { status, videoUrl, canRender }, v2: {...} }
+ * @param {function} [options.onCreateVideo] - called with style string ('v1'|'v2') when render requested
  */
-export function openPresentationPreview(manifest, { onExport, onCreateVideo, manifestUrl, videoState } = {}) {
+export function openPresentationPreview(manifest, { onExport, onCreateVideo, manifestUrl, videoStates } = {}) {
   closePresentationPreview();
 
   const sections = Array.isArray(manifest?.sections) ? manifest.sections : [];
@@ -271,7 +285,7 @@ export function openPresentationPreview(manifest, { onExport, onCreateVideo, man
     'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.83);' +
     'display:flex;align-items:center;justify-content:center;';
 
-  const ctx = { manifestUrl, videoState: videoState || { canRender: false, status: 'none' }, hasExport: !!onExport };
+  const ctx = { manifestUrl, videoStates: videoStates || {}, hasExport: !!onExport };
 
   function mount() {
     overlay.innerHTML = sections.length
@@ -286,10 +300,12 @@ export function openPresentationPreview(manifest, { onExport, onCreateVideo, man
         ?.addEventListener('click', onExport);
     }
     if (onCreateVideo) {
-      overlay.querySelector('[data-testid="preview-create-video-btn"]')
-        ?.addEventListener('click', onCreateVideo);
-      overlay.querySelector('[data-testid="preview-retry-video-btn"]')
-        ?.addEventListener('click', onCreateVideo);
+      for (const style of ['v1', 'v2']) {
+        overlay.querySelector(`[data-testid="preview-create-${style}-btn"]`)
+          ?.addEventListener('click', () => onCreateVideo(style));
+        overlay.querySelector(`[data-testid="preview-retry-${style}-btn"]`)
+          ?.addEventListener('click', () => onCreateVideo(style));
+      }
     }
     if (sections.length) {
       overlay.querySelector('[data-testid="preview-prev-btn"]')

@@ -16703,47 +16703,87 @@ async function _autoLoadNativeViewer(accession) {
 
 window.openAgentxReport = openAgentxReport;
 
-// ── Generic MP4 video state + render trigger ──────────────────────────────────
-// Data-driven; works for any accession/modality. Reads render.json status and the
-// served MP4. No study-specific branching.
-async function resolveVideoState(accession, canRender) {
+// ── Style-aware MP4 video state ───────────────────────────────────────────────
+// Resolves render status for both V1 and V2 from renders.json (style index).
+// Falls back to probing individual render.json + HEAD check when no index exists.
+async function resolveOneVideoState(dir, mp4Base, canRender) {
   const state = { canRender: !!canRender, status: 'none', videoUrl: null };
-  if (!accession) return state;
-  const dir = `/generated/hyperframes/${encodeURIComponent(accession)}`;
-  const base = `${dir}/renders/${encodeURIComponent(accession)}.mp4`;
   let meta = null;
   try {
     const r = await fetch(`${dir}/render.json`, { cache: 'no-store' });
     if (r.ok) meta = await r.json();
-  } catch (_) { /* no render.json yet */ }
+  } catch (_) {}
   if (meta?.status === 'rendering') { state.status = 'rendering'; return state; }
   let mp4Ok = false;
-  try { mp4Ok = (await fetch(base, { method: 'HEAD' })).ok; } catch (_) {}
+  try { mp4Ok = (await fetch(mp4Base, { method: 'HEAD' })).ok; } catch (_) {}
   if (mp4Ok) {
     state.status = 'complete';
-    state.videoUrl = meta?.mp4Version ? `${base}?v=${encodeURIComponent(meta.mp4Version)}` : base;
+    state.videoUrl = meta?.mp4Version ? `${mp4Base}?v=${encodeURIComponent(meta.mp4Version)}` : mp4Base;
     return state;
   }
   if (meta?.status === 'failed') { state.status = 'failed'; return state; }
-  return state; // 'none' → Create button shown when canRender
+  return state;
 }
 
-// Trigger an MP4 render. Uses a pluggable backend hook when present (e.g. a dev
-// bridge that runs the build script); otherwise surfaces the generic command.
-async function requestVideoRender(accession) {
+async function resolveVideoStates(accession, canRender) {
+  if (!accession) return { v1: { canRender: false, status: 'none' }, v2: { canRender: false, status: 'none' } };
+  const enc = encodeURIComponent(accession);
+
+  // Try renders.json (style index written by the render script after each style run).
+  // If present, use it for both styles to avoid double HEAD probes.
+  try {
+    const r = await fetch(`/generated/hyperframes/${enc}/renders.json`, { cache: 'no-store' });
+    if (r.ok) {
+      const index = await r.json();
+      const fromEntry = (entry = {}) => {
+        const { status = 'none', mp4Version, servedMp4Path } = entry;
+        if (status === 'complete' && servedMp4Path) {
+          return { canRender: !!canRender, status: 'complete',
+            videoUrl: mp4Version ? `${servedMp4Path}?v=${encodeURIComponent(mp4Version)}` : servedMp4Path };
+        }
+        return { canRender: !!canRender, status: status === 'failed' ? 'failed' : 'none', videoUrl: null };
+      };
+      return {
+        v1: fromEntry(index.styles?.v1),
+        v2: fromEntry(index.styles?.v2),
+      };
+    }
+  } catch (_) {}
+
+  // Fallback: probe individually.
+  const [v1, v2] = await Promise.all([
+    resolveOneVideoState(
+      `/generated/hyperframes/${enc}`,
+      `/generated/hyperframes/${enc}/renders/${enc}.mp4`,
+      canRender
+    ),
+    resolveOneVideoState(
+      `/generated/hyperframes/${enc}-v2`,
+      `/generated/hyperframes/${enc}-v2/renders/${enc}-v2.mp4`,
+      canRender
+    ),
+  ]);
+  return { v1, v2 };
+}
+
+// Trigger an MP4 render for a given style ('v1' or 'v2').
+// Uses a pluggable backend hook (window.elvieCreateVideo(accession, style)) when
+// present; otherwise surfaces the CLI command to copy.
+async function requestVideoRender(accession, style = 'v1') {
   if (!accession) return;
   if (typeof window.elvieCreateVideo === 'function') {
     try {
-      await window.elvieCreateVideo(accession);
-      showRpError('Rendering video… re-open PRESENT to check status.');
+      await window.elvieCreateVideo(accession, style);
+      showRpError(`Rendering ${style.toUpperCase()} video… re-open PRESENT to check status.`);
     } catch (e) {
       showRpError('Video render failed to start: ' + (e?.message || e));
     }
     return;
   }
-  const cmd = `npm run build:hyperframes -- --accession ${accession}`;
+  const stylePart = style !== 'v1' ? ` --style ${style}` : '';
+  const cmd = `node scripts/render-hyperframes-video.mjs --accession ${accession}${stylePart}`;
   try { await navigator.clipboard?.writeText(cmd); } catch (_) {}
-  showRpError('No render backend configured. Command copied to clipboard: ' + cmd);
+  showRpError(`No render backend configured. Command copied to clipboard: ${cmd}`);
 }
 
 // ── Hyperframes presentation launch ───────────────────────────────────────────
@@ -16817,25 +16857,21 @@ async function launchHyperframesPresentation(opts = {}) {
       window.__ELVIE_TEST_LAST_MANIFEST_URL__ = res.manifestUrl || null;
     }
 
-    // Generic MP4 state — data-driven, no study/modality-specific logic.
+    // Style-aware MP4 state — resolves V1 and V2 render status from renders.json.
     // canRender = the manifest has at least one captured image evidence.
-    // status comes from render.json (rendering/complete/failed); a complete render
-    // links to the served MP4 with a ?v=<hash> cache-busting version.
     const accession = context?.accession;
     const canRender = Array.isArray(res.manifest?.sections) && res.manifest.sections.some(s =>
       Array.isArray(s.imageEvidence) && s.imageEvidence.some(e => e?.status === 'captured' && (e.dataUrl || e.assetPath))
     );
-    const videoState = await resolveVideoState(accession, canRender);
+    const videoStates = await resolveVideoStates(accession, canRender);
 
-    // Show the local preview deck ("Preview Deck"). The deck is rendered to MP4
-    // by the HyperFrames CLI. "Create Video (MP4)" triggers a render via an
-    // optional pluggable hook (window.elvieCreateVideo); otherwise it surfaces
-    // the generic build command. No CT-specific logic here.
+    // Show the local preview deck ("Preview Deck"). "Create V1/V2 (MP4)" calls
+    // requestVideoRender with the style argument so the correct command is shown.
     previewMod.openPresentationPreview(res.manifest, {
       manifestUrl: res.manifestUrl,
-      videoState,
+      videoStates,
       onExport: () => publisherMod.downloadManifest(res.manifest),
-      onCreateVideo: () => requestVideoRender(accession)
+      onCreateVideo: (style) => requestVideoRender(accession, style)
     });
 
     return res;
