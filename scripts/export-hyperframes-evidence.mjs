@@ -22,6 +22,7 @@
 //   - DICOM server accessible at DICOMWEB_URL with the target accession loaded
 
 import { chromium } from 'playwright';
+import { spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -48,8 +49,10 @@ if (!accession) {
 
 const outputDir   = resolve(ROOT, 'web', 'generated', 'hyperframes', accession);
 const assetsDir   = resolve(outputDir, 'assets');
+const debugDir    = resolve(outputDir, 'debug');
 const shotDir     = resolve(ROOT, 'test-artifacts', 'hyperframes');
 mkdirSync(assetsDir, { recursive: true });
+mkdirSync(debugDir,  { recursive: true });
 mkdirSync(shotDir,   { recursive: true });
 
 console.log(`\n=== HyperFrames evidence export: ${targetName} (${accession}) ===`);
@@ -202,9 +205,80 @@ const presentationPath = resolve(outputDir, 'presentation.json');
 writeFileSync(presentationPath, JSON.stringify(processedManifest, null, 2));
 console.log(`Manifest: ${presentationPath}`);
 
-// ── 9. Report ─────────────────────────────────────────────────────────────────
+// Log detected viewport state per captured finding (audit).
+processedManifest.sections.forEach((s, i) => {
+  const ev = (s.imageEvidence || []).find(e => e.status === 'captured');
+  if (!ev) return;
+  const vs = ev.viewportState || {};
+  console.log(`Finding ${i + 1} W/L: preset=${ev.appliedPreset || '(none)'} ` +
+    `WC=${vs.windowCenter ?? '?'} WW=${vs.windowWidth ?? '?'} ` +
+    `zoom=${vs.zoom != null ? vs.zoom.toFixed(1) : '?'}`);
+});
+
+// ── 9. Live-viewer screenshots at capture time ────────────────────────────────
+// Close the preview, then re-drive the viewer to each finding (same navigation +
+// window/level the capture used) and screenshot the on-screen viewport. This is
+// the live-viewer reference the exported evidence asset should match.
+
+await page.keyboard.press('Escape').catch(() => {});
+await page.waitForTimeout(300);
+
+const liveShots = [];
+for (let i = 0; i < processedManifest.sections.length; i++) {
+  const section = processedManifest.sections[i];
+  const ev = (section.imageEvidence || []).find(e => e.status === 'captured');
+  if (!ev) continue;
+
+  const seriesNumber = section.seriesNumber ?? ev.seriesNumber;
+  const imageNumber  = section.imageNumber ?? ev.imageNumber;
+  const preset       = ev.appliedPreset || section.windowPreset || null;
+
+  await page.evaluate(async ({ accession, findingId, seriesNumber, imageNumber, preset }) => {
+    await window.dispatchViewerCommand?.({
+      type: 'openStudyThenFinding',
+      accession,
+      findingId,
+      imageReference: { type: 'series-image', seriesNumber, imageNumber }
+    });
+    await new Promise(r => setTimeout(r, 700));
+    if (preset && typeof window.applyWindowPresetLocal === 'function') {
+      try { await window.applyWindowPresetLocal(preset, { silent: true, logTag: 'export_live_shot' }); } catch {}
+    }
+    await new Promise(r => setTimeout(r, 450));
+  }, { accession, findingId: section.id, seriesNumber, imageNumber, preset });
+
+  const liveShotPath = resolve(debugDir, `live-viewer-before-capture-finding-${i + 1}.png`);
+  const vpEl = page.locator('.native-cs-viewport').first();
+  try {
+    await vpEl.screenshot({ path: liveShotPath });
+    liveShots.push({ section: i + 1, path: liveShotPath, assetName: `finding-${i + 1}.png` });
+    console.log(`Live viewer: ${liveShotPath}`);
+  } catch (e) {
+    console.log(`(Live viewer screenshot ${i + 1} skipped: ${e.message})`);
+  }
+}
+
+// ── 10. Report ────────────────────────────────────────────────────────────────
 
 await browser.close();
+
+// ── 11. Side-by-side comparison images (live viewer | exported asset) ─────────
+// Requires ffmpeg; non-fatal if unavailable.
+for (const shot of liveShots) {
+  const assetPath = resolve(assetsDir, shot.assetName);
+  const cmpPath   = resolve(debugDir, `capture-comparison-finding-${shot.section}.png`);
+  if (!existsSync(shot.path) || !existsSync(assetPath)) continue;
+  const ff = spawnSync('ffmpeg', [
+    '-y', '-i', shot.path, '-i', assetPath,
+    '-filter_complex', '[0:v]scale=640:-1[a];[1:v]scale=640:-1[b];[a][b]hstack=inputs=2',
+    cmpPath,
+  ], { encoding: 'utf8', timeout: 60_000 });
+  if (ff.status === 0 && existsSync(cmpPath)) {
+    console.log(`Comparison:  ${cmpPath}`);
+  } else {
+    console.log(`(Comparison ${shot.section} skipped: ffmpeg unavailable or failed)`);
+  }
+}
 
 console.log('\n=== Export complete ===');
 console.log(`Target:       ${targetName} (${accession})`);

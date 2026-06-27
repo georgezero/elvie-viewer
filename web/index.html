@@ -12274,6 +12274,54 @@ function nativeCornerstoneGetVoiRange(viewport) {
   return { lower: -1000, upper: 1000 };
 }
 
+// Read the active native viewport's window/level + camera state for evidence
+// metadata. Returns null when the native viewer is not active. Window center/
+// width are derived from the live VOI range; zoom/pan are best-effort from the
+// Cornerstone camera (translation when present, otherwise focal point).
+function readActiveNativeViewportState() {
+  const csState = state.nativeViewer?.cornerstone;
+  const viewports = csState?.viewports || [];
+  if (!viewports.length) return null;
+  const idx = Math.max(0, Number(state.nativeViewer?.activePaneIndex || 0));
+  const entry = viewports[idx] || viewports[0];
+  const viewport = entry?.viewport;
+  if (!viewport) return null;
+
+  const out = {
+    viewportId: entry.viewportId ?? null,
+    seriesNumber: Number.isFinite(Number(entry?.pane?.seriesNumber)) ? Number(entry.pane.seriesNumber) : null,
+    imageNumber: Number.isFinite(Number(entry?.pane?.imageNumber)) ? Number(entry.pane.imageNumber) : null
+  };
+
+  try {
+    const range = nativeCornerstoneGetVoiRange(viewport);
+    if (range && Number.isFinite(range.lower) && Number.isFinite(range.upper)) {
+      out.voiRange = { lower: Number(range.lower), upper: Number(range.upper) };
+      out.windowWidth = Math.round(range.upper - range.lower);
+      out.windowCenter = Math.round((range.upper + range.lower) / 2);
+    }
+  } catch { /* ignore */ }
+
+  try {
+    const cam = typeof viewport.getCamera === 'function' ? viewport.getCamera() : null;
+    if (cam) {
+      if (Number.isFinite(Number(cam.parallelScale))) out.zoom = Number(cam.parallelScale);
+      if (cam.translation && Number.isFinite(Number(cam.translation.x))) {
+        out.pan = { x: Number(cam.translation.x), y: Number(cam.translation.y) };
+      } else if (Array.isArray(cam.focalPoint)) {
+        out.pan = { focalPoint: cam.focalPoint.map((v) => Number(v)) };
+      }
+    }
+  } catch { /* ignore */ }
+
+  try {
+    const canvas = typeof viewport.getCanvas === 'function' ? viewport.getCanvas() : null;
+    if (canvas) { out.canvasWidth = canvas.width || null; out.canvasHeight = canvas.height || null; }
+  } catch { /* ignore */ }
+
+  return out;
+}
+
 function nativeCornerstoneWindowViewport(viewport, startRange, dx, dy) {
   if (!viewport || typeof viewport.setProperties !== 'function') return;
   const width0 = Math.max(1, startRange.upper - startRange.lower);
@@ -16677,7 +16725,17 @@ async function launchHyperframesPresentation(opts = {}) {
 
     const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
     const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings, {
-      settleMs: window.__ELVIE_EVIDENCE_SETTLE_MS__ ?? 600
+      settleMs: window.__ELVIE_EVIDENCE_SETTLE_MS__ ?? 600,
+      // Apply each finding's window/level preset so captured evidence matches the
+      // live viewer appearance (e.g. bone window for a calvarial fracture).
+      applyWindowPreset: async (preset) => {
+        try {
+          await applyWindowPresetLocal(preset, { silent: true, logTag: 'evidence_capture' });
+          return true;
+        } catch { return false; }
+      },
+      // Read the live VOI/camera state into the evidence metadata (audit/debug).
+      readViewportState: () => readActiveNativeViewportState()
     });
 
     // Build manifest + publish to a fetchable URL. The SW publisher is used when the

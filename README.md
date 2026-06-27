@@ -68,7 +68,7 @@ Playwright starts `python3 -m http.server 4173` from the `web/` directory automa
 
 Limitations:
 - No DICOM or DICOMweb server is required for browser tests — they use injected mock report contexts or the seeded demo reports.
-- Image evidence (`imageEvidence` in each manifest section) is collected by navigating to each positive finding and capturing the active Cornerstone canvas via `canvas.toDataURL()`. Without a DICOMweb server, canvases are blank and evidence records carry an explicit status (`no_viewer`, `no_canvas`, or `skipped_non_navigable`) rather than a data URL. The manifest is still valid and exportable; the status fields let the consumer decide how to handle missing visuals.
+- Image evidence (`imageEvidence` in each manifest section) is collected by navigating to each positive finding, applying its window/level preset, and capturing the active Cornerstone canvas via `canvas.toDataURL()` (see [Evidence appearance matches the live viewer](#evidence-appearance-matches-the-live-viewer)). Without a DICOMweb server, canvases are blank and evidence records carry an explicit status (`no_viewer`, `canvas_empty`, or `skipped_non_navigable`) rather than a data URL. The manifest is still valid and exportable; the status fields let the consumer decide how to handle missing visuals.
 
 ## Presentation export (Preview Deck → MP4)
 
@@ -142,12 +142,51 @@ web/generated/hyperframes/NI9f7ff9/
 curl http://localhost:4173/lv-manifest/<id>.json | python3 -m json.tool
 ```
 
-### Limitation
+### Evidence appearance matches the live viewer
 
-Real image evidence requires the **browser/DICOM viewer path**: the export step drives the
-live viewer to navigate to each finding and capture the Cornerstone canvas. Running the render
-script alone (without a prior export) falls back to a registry-only manifest with placeholder
-panels instead of CT images.
+Evidence is captured from Elvie's **rendered Cornerstone viewport canvas**, not
+reconstructed from DICOMweb. For each positive finding the export step:
+
+1. navigates the viewer to the finding's series/image
+2. applies the finding's window/level preset (e.g. `brain`, `bone`) so the
+   capture matches what a reader sees — the calvarial-fracture slide is captured
+   in **bone window**, the infarct slide in **brain window**
+3. reads the live viewport VOI/camera back into the evidence metadata
+4. captures the canvas
+
+Captured `imageEvidence` records carry, for audit/debug:
+
+- `captureSource` (`viewport-canvas`)
+- `appliedPreset` and `windowPreset` (the W/L preset applied for the capture)
+- `viewportState`: `windowCenter`, `windowWidth`, `voiRange`, `zoom`, `pan`,
+  `canvasWidth`/`canvasHeight`, `seriesNumber`/`imageNumber`
+- `diagnostics`: canvas count, viewport dimensions, blank-canvas check
+
+PHI overlays are **not** included: patient banners are HTML siblings of the
+canvas, so `canvas.toDataURL()` captures only the rendered image pixels.
+
+Validation artifacts written under `web/generated/hyperframes/<accession>/debug/`:
+
+```
+debug/live-viewer-before-capture-finding-1.png   on-screen viewer at capture time
+debug/live-viewer-before-capture-finding-2.png
+debug/capture-comparison-finding-1.png           side-by-side: live viewer | exported asset
+debug/capture-comparison-finding-2.png
+debug/render-input-slide-1.png                   exact HTML passed to the renderer
+debug/rendered-frame-1.png                       frame extracted from the MP4
+```
+
+### Limitations
+
+- Real evidence requires the **browser/DICOM viewer path**. Running the render
+  script alone (without a prior export) falls back to a registry-only manifest
+  with placeholder panels instead of CT images.
+- Window/level preservation depends on the finding carrying a `windowPreset` and
+  on the live Cornerstone viewport exposing VOI/camera state. When neither is
+  available the capture uses whatever the viewer currently shows, and the
+  `viewportState`/`appliedPreset` metadata fields are omitted.
+- Zoom/pan are recorded for audit but the composition presents the captured frame
+  as-is; it does not re-apply camera transforms.
 
 ## Related
 

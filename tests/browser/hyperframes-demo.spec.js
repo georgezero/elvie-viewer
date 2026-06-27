@@ -604,6 +604,37 @@ test.describe('CT Head exported evidence package', () => {
 
   test.skip(!fs.existsSync(manifestPath), 'presentation.json not yet generated — run npm run build:hyperframes:ct-head');
 
+  test('evidence metadata records series/image and capture source', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const captured = manifest.sections.flatMap(s => s.imageEvidence ?? [])
+      .filter(e => e.status === 'captured');
+    expect(captured.length).toBeGreaterThan(0);
+    for (const ev of captured) {
+      expect(ev.captureSource).toBe('viewport-canvas');
+      expect(Number.isFinite(ev.seriesNumber)).toBe(true);
+      expect(Number.isFinite(ev.imageNumber)).toBe(true);
+    }
+  });
+
+  test('when viewport state is available, evidence includes window/level fields', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const withState = manifest.sections.flatMap(s => s.imageEvidence ?? [])
+      .filter(e => e.status === 'captured' && e.viewportState);
+    // Skip only if the capture ran without a live viewer (no DICOM available).
+    test.skip(withState.length === 0, 'no viewport state captured (viewer not loaded with DICOM)');
+    for (const ev of withState) {
+      expect(Number.isFinite(ev.viewportState.windowCenter)).toBe(true);
+      expect(Number.isFinite(ev.viewportState.windowWidth)).toBe(true);
+    }
+    // The CT Head fracture finding should preserve the bone window (wide WW).
+    const fracture = manifest.sections.find(s => s.id === 'healed-left-vertex-fracture');
+    const fracEv = fracture?.imageEvidence?.find(e => e.status === 'captured' && e.viewportState);
+    if (fracEv) {
+      expect(fracEv.appliedPreset).toBe('bone');
+      expect(fracEv.viewportState.windowWidth).toBeGreaterThan(1000);
+    }
+  });
+
   test('presentation.json has sections with imageEvidence asset paths', () => {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     expect(manifest.payloadVersion).toBe('presentation-manifest-v1');
@@ -668,5 +699,20 @@ test.describe('CT Head exported evidence package', () => {
     expect(fs.statSync(renderedFrameShot).size).toBeGreaterThan(5000);
     // The extracted MP4 frame visibly contains the CT image (not the placeholder).
     expect(meta.renderedFrameContainsImage).toBe(true);
+  });
+
+  test('live-viewer-at-capture screenshots exist for each captured finding', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const capturedIdx = manifest.sections
+      .map((s, i) => ({ i, has: (s.imageEvidence || []).some(e => e.status === 'captured') }))
+      .filter(x => x.has)
+      .map(x => x.i + 1);
+    test.skip(capturedIdx.length === 0, 'no captured findings');
+    for (const n of capturedIdx) {
+      const shot = path.join(debugDir, `live-viewer-before-capture-finding-${n}.png`);
+      // Live screenshots require the export to have run with a live viewer.
+      test.skip(!fs.existsSync(shot), `live-viewer screenshot ${n} not generated`);
+      expect(fs.statSync(shot).size).toBeGreaterThan(2000);
+    }
   });
 });
