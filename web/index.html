@@ -16764,14 +16764,22 @@ async function launchHyperframesPresentation(opts = {}) {
     }
 
     // Check whether a pre-rendered MP4 exists for this accession (written by the
-    // render:hyperframes script). HEAD request costs nothing if the file is absent.
+    // render:hyperframes script). Append a content-version query (?v=<hash>) so a
+    // re-rendered MP4 is never masked by a CDN/proxy cache keyed on the bare URL.
     const accession = context?.accession;
     let videoUrl;
     if (accession) {
-      const mp4Path = `/generated/hyperframes/${encodeURIComponent(accession)}/renders/${encodeURIComponent(accession)}.mp4`;
+      const base = `/generated/hyperframes/${encodeURIComponent(accession)}/renders/${encodeURIComponent(accession)}.mp4`;
       try {
-        const chk = await fetch(mp4Path, { method: 'HEAD' });
-        if (chk.ok) videoUrl = mp4Path;
+        // render.json carries mp4Version (content hash prefix). Prefer it; it also
+        // confirms a render exists. Fall back to a plain HEAD check.
+        let version = null;
+        try {
+          const metaRes = await fetch(`/generated/hyperframes/${encodeURIComponent(accession)}/render.json`, { cache: 'no-store' });
+          if (metaRes.ok) { const meta = await metaRes.json(); version = meta?.mp4Version || null; }
+        } catch (_) { /* no render.json — fall through to HEAD */ }
+        const chk = await fetch(base, { method: 'HEAD' });
+        if (chk.ok) videoUrl = version ? `${base}?v=${encodeURIComponent(version)}` : base;
       } catch (_) { /* server not serving generated/ or file absent — ignore */ }
     }
 

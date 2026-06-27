@@ -145,7 +145,7 @@ const BUILTIN_REPORTS = [
       {
         id: 'chronic-left-caudate-infarct', accession: 'NI9f7ff9', label: 'Chronic left caudate infarct', description: 'Chronic infarct involving left caudate head', section: 'findings',
         patientFriendlyExplanation: 'This is an old area of stroke damage in a small part of the brain, not a new stroke.',
-        impressionText: 'No acute intracranial hemorrhage.', seriesNumber: 2, imageNumber: 21, windowPreset: 'brain', modality: 'CT', anatomy: 'left caudate head', laterality: 'left', disease: 'chronic infarct', localization_target: 'left caudate head', modality_hint: 'CT', view_hint: 'axial', severity: 'chronic', source: 'seeded', confidence: 1, rawText: 'Chronic infarct involving left caudate head (Series 2, Image 21).'
+        impressionText: 'No acute intracranial hemorrhage.', seriesNumber: 2, imageNumber: 21, windowPreset: 'brain_stroke', modality: 'CT', anatomy: 'left caudate head', laterality: 'left', disease: 'chronic infarct', localization_target: 'left caudate head', modality_hint: 'CT', view_hint: 'axial', severity: 'chronic', source: 'seeded', confidence: 1, rawText: 'Chronic infarct involving left caudate head (Series 2, Image 21).'
       },
       {
         id: 'healed-left-vertex-fracture', accession: 'NI9f7ff9', label: 'Healed left vertex fracture', description: 'Healed fracture near left vertex', section: 'findings',

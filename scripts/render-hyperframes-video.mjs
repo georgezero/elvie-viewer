@@ -277,7 +277,11 @@ if (exitCode !== 0) {
 }
 
 const mp4Exists = existsSync(outputPath);
-const mp4Bytes  = mp4Exists ? readFileSync(outputPath).byteLength : 0;
+const mp4Buffer = mp4Exists ? readFileSync(outputPath) : null;
+const mp4Bytes  = mp4Buffer ? mp4Buffer.byteLength : 0;
+// Content hash → cache-busting version token for the served URL (Cloudflare
+// caches .mp4 by extension; a ?v=<hash> query forces a fresh fetch per render).
+const mp4Sha256 = mp4Buffer ? sha256(mp4Buffer) : null;
 
 // ── 5. Post-render verification: extract a frame from the MP4 ───────────────────
 // Pull a frame from the middle of slide 1 and run a simple content heuristic:
@@ -323,6 +327,8 @@ writeFileSync(resolve(projectDir, 'render.json'), JSON.stringify({
   renderedFrameContainsImage: frameHasImage,
   renderedAt: new Date().toISOString(),
   mp4SizeKB: mp4Exists ? Math.round(mp4Bytes / 1024) : null,
+  mp4Sha256,
+  mp4Version: mp4Sha256 ? mp4Sha256.slice(0, 12) : null,
 }, null, 2));
 
 // ── 7. Report ──────────────────────────────────────────────────────────────────
