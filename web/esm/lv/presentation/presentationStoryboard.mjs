@@ -132,6 +132,33 @@ export function derivePointer(finding) {
   return null;
 }
 
+// ── Imaging-plane orientation (optional label) ──────────────────────────────
+// Derived from the finding's view hint when present; omitted otherwise (we never
+// fabricate an orientation we don't know).
+export function deriveOrientation(finding) {
+  const v = norm(pick(finding, 'view_hint', 'viewHint')).toLowerCase();
+  const map = { axial: 'AXIAL', sagittal: 'SAGITTAL', coronal: 'CORONAL', ap: 'AP', pa: 'PA', lateral: 'LATERAL' };
+  return map[v] || '';
+}
+
+// ── Camera move kind ────────────────────────────────────────────────────────
+// Subtle, finding-appropriate motion. Focal lesions get a slow zoom; fractures a
+// gentle upward pan; diffuse processes almost no movement. Renderer-agnostic hint.
+export function deriveCameraKind(finding) {
+  const hay = `${pick(finding, 'label')} ${pick(finding, 'disease')} ${pick(finding, 'description', 'rawText')} ${pick(finding, 'severity')}`.toLowerCase();
+  if (/fracture|calvari|vertex|osseous|cortical|bony/.test(hay)) return 'pan-up';
+  if (/effusion|edema|oedema|atroph|diffuse|volume|encephalomalacia|generalized/.test(hay)) return 'still';
+  if (/infarct|lesion|nodule|mass|tumou?r|focal|hemorrhage|haematoma|hematoma/.test(hay)) return 'zoom';
+  return 'zoom-soft';
+}
+
+// True when the finding carries an image localization (series + image).
+export function hasLocalization(finding) {
+  const sn = finding?.seriesNumber ?? finding?.series_number;
+  const im = finding?.imageNumber ?? finding?.image_number;
+  return sn != null && sn !== '' && im != null && im !== '';
+}
+
 // ── Per-finding narration ───────────────────────────────────────────────────
 function findingNarration(finding, sentence) {
   const base = norm(sentence) || norm(pick(finding, 'label'));
@@ -170,6 +197,9 @@ export function buildStoryboard({ modality, accession, positiveFindings = [], ne
       reportSentence: sentence,
       highlightPhrase: deriveHighlightPhrase(f, sentence),
       pointer: derivePointer(f),
+      orientation: deriveOrientation(f),
+      cameraKind: deriveCameraKind(f),
+      localized: hasLocalization(f),
       narration: findingNarration(f, sentence),
     };
     if (id) perFinding[id] = entry;

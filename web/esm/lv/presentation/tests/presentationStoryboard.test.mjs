@@ -82,16 +82,47 @@ test('manifest carries study, summary, impression, narrationScript', () => {
   assert.ok(m.sections[0].narration.includes('Series 2'));
 });
 
-test('exportHtmlComposition emits all cinematic scenes and is deterministic', () => {
+// A 1x1 PNG data URL used as captured evidence so findings become image scenes.
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+function evidenceMapFor(findings) {
+  const map = new Map();
+  for (const f of findings) map.set(f.id, [{ status: 'captured', dataUrl: PNG, appliedPreset: 'brain_stroke', seriesNumber: f.seriesNumber, imageNumber: f.imageNumber }]);
+  return map;
+}
+
+test('exportHtmlComposition emits cinematic scenes for localized findings, deterministic', () => {
   const ctx = { source: 'demo', accession: 'NI9f7ff9', modality: 'CT',
     positiveFindings: CT_POSITIVE, negativeFindings: CT_NEGATIVE };
-  const m = buildPresentationManifest(ctx, {});
+  const m = buildPresentationManifest(ctx, { evidenceMap: evidenceMapFor(CT_POSITIVE) });
   const html = exportHtmlComposition(m, { assetMode: 'data-url' });
   for (const id of ['sc-title', 'sc-summary', 'sc-find-0-a', 'sc-find-0-b', 'sc-find-1-b', 'sc-closing']) {
     assert.ok(html.includes(id), `composition should contain ${id}`);
   }
   // No infinite GSAP repeats (HyperFrames requires deterministic finite repeats).
   assert.ok(!/repeat:\s*-1/.test(html), 'no infinite repeats allowed');
-  // Highlighted phrase rendered.
-  assert.match(html, /<span class="hl">left caudate head<\/span>/);
+  // Highlighted phrase rendered (now carries a sweep id).
+  assert.match(html, /<span class="hl" id="[^"]+">left caudate head<\/span>/);
+  // Persistent ELVIE brand layer in viewer cyan.
+  assert.match(html, /Bebas Neue/);
+  assert.match(html, /#00d4e8/);
+});
+
+test('data-driven scene selection: non-localized findings get no image scene', () => {
+  const NON_LOCALIZED = { id: 'chondromalacia-patella', label: 'Chondromalacia patella',
+    description: 'Mild chondromalacia patella', anatomy: 'patella', disease: 'chondromalacia',
+    seriesNumber: null, imageNumber: null, modality: 'MR' };
+  const positives = [CT_POSITIVE[0], NON_LOCALIZED];
+  const ctx = { source: 'demo', accession: 'X', modality: 'MR', positiveFindings: positives, negativeFindings: [] };
+  // Only the first finding has captured evidence.
+  const map = new Map();
+  map.set(CT_POSITIVE[0].id, [{ status: 'captured', dataUrl: PNG, appliedPreset: 'brain_stroke', seriesNumber: 2, imageNumber: 21 }]);
+  const m = buildPresentationManifest(ctx, { evidenceMap: map });
+  const html = exportHtmlComposition(m, { assetMode: 'data-url' });
+  // Localized finding → image scene.
+  assert.ok(html.includes('sc-find-0-b'), 'localized finding has an image scene');
+  // Non-localized finding → NO second image scene.
+  assert.ok(!html.includes('sc-find-1-b'), 'non-localized finding must not get an image scene');
+  // But it IS in the impression and narration.
+  assert.ok(m.impression.some(b => /chondromalacia/i.test(b)), 'non-localized in impression');
+  assert.ok(m.narrationScript.some(s => s.findingId === 'chondromalacia-patella'), 'non-localized in narration');
 });

@@ -588,6 +588,44 @@ test.describe('MP4 render status in preview deck', () => {
   });
 });
 
+test.describe('Generic MP4 button state machine', () => {
+  // Drives openPresentationPreview directly with a synthetic manifest so the
+  // state machine can be validated without a DICOM server. No study-specific logic.
+  async function renderState(page, videoState, { withEvidence = true } = {}) {
+    return page.evaluate(async ({ videoState, withEvidence }) => {
+      const mod = await import('/esm/lv/presentation/presentationPreview.mjs');
+      const manifest = {
+        payloadVersion: 'presentation-manifest-v1', accession: 'X', presentationTitle: 'T', studyLabel: 'X',
+        sections: [{ id: 'f1', title: 'Finding', text: 't', navigable: true, seriesNumber: 1, imageNumber: 1,
+          imageEvidence: withEvidence ? [{ status: 'captured', dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' }] : [] }]
+      };
+      mod.openPresentationPreview(manifest, { videoState, onCreateVideo: () => {}, onExport: () => {} });
+      const has = (t) => !!document.querySelector(`[data-testid="${t}"]`);
+      const out = {
+        create: has('preview-create-video-btn'),
+        rendering: has('preview-mp4-rendering'),
+        link: has('preview-mp4-link'),
+        retry: has('preview-retry-video-btn'),
+        status: has('preview-mp4-status'),
+      };
+      mod.closePresentationPreview();
+      return out;
+    }, { videoState, withEvidence });
+  }
+
+  test('Create / Rendering / Watch / Retry / none states render the right control', async ({ page }) => {
+    await page.goto('/index.html');
+    await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+
+    expect(await renderState(page, { canRender: true, status: 'none' })).toMatchObject({ create: true });
+    expect(await renderState(page, { canRender: true, status: 'rendering' })).toMatchObject({ rendering: true });
+    expect(await renderState(page, { canRender: true, status: 'complete', videoUrl: '/x.mp4?v=abc' })).toMatchObject({ link: true });
+    expect(await renderState(page, { canRender: true, status: 'failed' })).toMatchObject({ retry: true });
+    // No capability → no Create button, just an explanatory status.
+    expect(await renderState(page, { canRender: false, status: 'none' })).toMatchObject({ create: false, status: true });
+  });
+});
+
 test.describe('Preview Deck is the single source of truth for evidence', () => {
   // Proves the image the Preview Deck displays is byte-identical to the image the
   // HTML exporter embeds — no second capture/render happens for the MP4 path.

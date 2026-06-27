@@ -36,18 +36,8 @@ const VIEWER_URL  = process.env.ELVIE_URL      || 'http://localhost:4173/index.h
 const DICOMWEB    = process.env.DICOMWEB_URL   || 'https://elvie-server.ggg.ad/dicom-web';
 const SETTLE_MS   = parseInt(process.env.SETTLE_MS || '2000', 10);
 
-const TARGETS = {
-  'ct-head': 'NI9f7ff9',
-  'mr-knee': '3852755662087132',
-};
-
-const targetName = process.argv[2] || 'ct-head';
-const accession  = TARGETS[targetName];
-
-if (!accession) {
-  console.error(`Unknown target "${targetName}". Available: ${Object.keys(TARGETS).join(', ')}`);
-  process.exit(1);
-}
+const { resolveTarget } = await import(`${ROOT}/scripts/lib/resolveTarget.mjs`);
+const { accession, label: targetName } = resolveTarget(process.argv.slice(2));
 
 const outputDir   = resolve(ROOT, 'web', 'generated', 'hyperframes', accession);
 const assetsDir   = resolve(outputDir, 'assets');
@@ -313,4 +303,4 @@ if (capturedCount === 0) {
   console.log(`  - Check that ${DICOMWEB} has accession ${accession}.`);
   console.log('  - The render will use placeholder panels instead.');
 }
-console.log('\nNext: npm run render:hyperframes:' + targetName);
+console.log(`\nNext: node scripts/render-hyperframes-video.mjs --accession ${accession}`);

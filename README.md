@@ -102,48 +102,96 @@ Elvie viewer  →  browser evidence export  →  HTML composition  →  npx hype
 ### Cinematic storyboard
 
 The MP4 is a narrated case presentation built from reusable scene builders in
-`htmlPresentationExporter.mjs`, each emitting one GSAP timeline segment:
+`htmlPresentationExporter.mjs`, each emitting one GSAP timeline segment. The
+builders are a small **presentation engine** (data-driven scene selection,
+isolated segments) rather than a slideshow renderer, so future capabilities
+(cine scrolling, camera paths, viewport replay, narrated playback) can be added
+as new segment types without redesign.
 
-| Scene | Duration | Content |
-|-------|----------|---------|
+| Scene | ~Duration | Content |
+|-------|-----------|---------|
+| `brandLayer`   | persistent | ELVIE wordmark (viewer styling: Bebas Neue, cyan `#00d4e8`, 0.12em), upper-left, ~45% opacity, never animated |
 | `TitleScene`   | 3s | exam name, accession, study date, indication over a blurred/darkened CT backdrop with a slow push-in |
 | `SummaryScene` | 4s | one-line AI study summary, animated in with an accent rule |
-| `FindingScene` × N | 9s each | **beat A (3s)**: report sentence with the key phrase highlighted; **beat B (6s)**: cross-dissolve to the captured CT image with a slow Ken Burns zoom, an animated pointer ring, and a metadata card (series/image). Image fills ~75% of the frame. |
-| `ClosingScene` | 5s | impression bullets, gentle fade to black |
+| `FindingScene` × N | 9s each | **beat A**: report sentence with a reading-sweep highlight on the key phrase, which lifts and hands off into the image; **beat B**: cross-dissolve to the captured image with viewer-style framing (faint border, vignette, gentle shadow, optional orientation label), a finding-appropriate camera move, a pointer that appears → pulses twice → fades, and a minimal metadata card. Image fills ~75% of the frame. |
+| `ClosingScene` | 5s | impression bullets animated individually, gentle fade to black |
 
-For the CT Head demo (2 findings) the total runtime is **31s** (3 + 4 + 2×9 + 5,
-plus cross-dissolve tail). Transitions are fades / cross-dissolves — no hard cuts.
+Brief pauses sit between scenes so future narration has room. Transitions are
+fades / cross-dissolves — no hard cuts. CT Head (2 image scenes) ≈ 34s.
 
-The storyboard text (summary, impression bullets, per-finding highlight phrase,
-pointer hint) is generated deterministically in `presentationStoryboard.mjs` and
-stored on the manifest (`study`, `summary`, `impression`, per-section
-`reportSentence`/`highlightPhrase`/`pointer`/`narration`).
+**Camera move** is derived from the finding (focal lesion → slow zoom toward the
+lesion; fracture → upward pan; diffuse process → almost still). **Pointer**
+positions come from `finding.localization` when available, else hand-placed
+`DEMO_POINTERS` — future AI localization drops in unchanged.
 
-**Pointer overlay:** each finding may carry a normalized `pointer` `{x, y, style}`
-that the renderer draws as a pulsing ring tracking the Ken Burns zoom. Positions
-are hand-placed for the demo studies (`DEMO_POINTERS`) but the renderer consumes
-`finding.localization` first, so future AI localization data drops in unchanged.
+The storyboard text (summary, impression, per-finding highlight phrase, pointer,
+orientation, camera kind, narration) is generated deterministically in
+`presentationStoryboard.mjs` and stored on the manifest.
 
-**Narration (no TTS yet):** every scene gets a plain-text `narration` segment,
-collected in `manifest.narrationScript` (`[{scene, findingId?, narration}]`). The
-video renderer is independent of narration; a later pass can feed these to browser
-TTS, OpenAI, ElevenLabs, Cartesia, etc.
+**Narration (no TTS yet):** every scene gets a plain-text `narration` segment in
+`manifest.narrationScript`. The renderer is independent of narration; a later
+pass can feed these to browser TTS, OpenAI, ElevenLabs, Cartesia, etc.
 
-### Build the CT Head video
+### Build a video for any study
+
+The pipeline is generic and entirely manifest-driven — there is no per-study or
+per-modality export code. It works for CT, MR, PET, NM, XR, US, etc., provided
+the manifest carries image evidence.
 
 ```bash
 # Dev server must be running (serves the viewer the export script drives):
 cd web && python3 -m http.server 4173 &
 
-npm run build:hyperframes:ct-head     # export evidence, then render MP4
-# or run the steps separately:
-npm run export:hyperframes:ct-head    # browser-assisted evidence capture
-npm run render:hyperframes:ct-head    # build HTML + render MP4 + verify
+# Generic build (export evidence, then render MP4) for any accession:
+npm run build:hyperframes -- --accession <accession>
+
+# Convenience aliases for the demo studies:
+npm run build:hyperframes:ct-head     # --accession NI9f7ff9
+npm run build:hyperframes:mr-knee     # --accession 3852755662087132
 ```
 
+**Data-driven scene selection.** Each positive finding becomes an image scene
+only when it has captured image evidence. Findings without localization (no
+series/image — e.g. *chondromalacia patella*) are **not** dropped: they still
+appear in the opening summary, the closing impression, and the narration script;
+they simply get no image scene. If localization becomes available later they
+automatically become normal image scenes — no code change.
+
+The build prints a storyboard plan so it is obvious why each finding did or did
+not get an image scene:
+
+```
+Presentation Storyboard
+  Opening title
+  Summary
+  Finding 1: Medial meniscus tear
+    ✓ Image scene  (Series 6, Image 23)
+  Finding 2: Joint effusion
+    ✓ Image scene  (Series 3, Image 14)
+  Finding 3: Chondromalacia patella
+    • Summary + closing impression only
+    • No image localization available
+  Closing impression
+```
+
+### Create Video (MP4) in the Preview Deck
+
+The Preview Deck exposes a generic, data-driven MP4 control (no study-specific
+logic). It determines capability from the manifest (any captured image evidence)
+and reads `render.json` `status`:
+
+- capable, no render yet → **▶ Create Video (MP4)**
+- render in progress → **Rendering video…** (disabled)
+- render complete → **▶ Watch rendered MP4** (cache-busted `?v=<hash>` link)
+- render failed → **↻ Retry rendering**
+- no image evidence → an explanatory note (no button)
+
+"Create"/"Retry" call an optional pluggable hook (`window.elvieCreateVideo`); with
+no backend wired they surface the generic build command.
+
 `export:` launches headless Chromium (Playwright), points DICOMweb at
-`https://elvie-server.ggg.ad/dicom-web`, loads the demo report, runs the normal PRESENT
-evidence-capture path, and writes the captured CT images plus a manifest.
+`https://elvie-server.ggg.ad/dicom-web`, loads the report, runs the normal PRESENT
+evidence-capture path, and writes the captured images plus a manifest.
 
 `render:` reads that manifest, **embeds each PNG as an inline `data:` URL** inside the
 generated HTML (the most reliable path for the CLI renderer — no file-server/cwd/relative-path

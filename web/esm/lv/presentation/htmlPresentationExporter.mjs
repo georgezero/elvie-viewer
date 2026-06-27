@@ -3,32 +3,44 @@
 // Converts a PresentationManifest (presentation-manifest-v1) into a HyperFrames
 // HTML composition for the CLI HTML-to-MP4 renderer:  npx hyperframes render <dir>
 //
-// The composition is built from reusable SCENE BUILDERS, each emitting one
-// timeline segment (HTML clip(s) + GSAP tweens at absolute times):
+// Built from reusable SCENE BUILDERS, each emitting one timeline segment (HTML
+// clip(s) + GSAP tweens at absolute times). The builders are designed as a small
+// presentation engine — scene timing is data-driven and each scene is an isolated
+// unit — so future capabilities (cine scrolling, camera paths, viewport replay,
+// narrated playback) can be added as new scene/segment types without redesign.
 //
+//   brandLayer    persistent ELVIE wordmark (viewer styling, never animated)
 //   TitleScene    exam name, accession, indication over a blurred CT backdrop
-//   SummaryScene  one-line AI study summary, animated in
-//   FindingScene  beat A: report sentence with the key phrase highlighted
-//                 beat B: cross-dissolve to the captured CT image with a slow
-//                         Ken Burns zoom, an animated pointer, and a metadata card
-//   ClosingScene  impression bullets, gentle fade to black
+//   SummaryScene  one-line study summary, animated in
+//   FindingScene  (localized findings only) report sentence with a reading-sweep
+//                 highlight that hands off into the CT image; viewer-style framing,
+//                 finding-appropriate camera move, a pointer that pulses then fades,
+//                 and a minimal metadata card
+//   ClosingScene  impression bullets (staggered), gentle fade to black
 //
-// Cinematic language: every clip starts at opacity:0 and is faded/cross-dissolved
-// via GSAP; images get a continuous Ken Burns transform; the pointer pulses.
+// Data-driven scene selection: a finding gets an image scene only when it has
+// captured image evidence. Non-localized positives are still represented in the
+// summary, impression, and narration — they simply get no image scene.
 //
 // Evidence is untouched: images come straight from the manifest's imageEvidence
-// (the exact Preview Deck bytes). assetMode controls how that image is referenced
-// (see resolveEvidenceUrl). The module stays free of fs/path imports.
+// (the exact Preview Deck bytes). assetMode controls how that image is referenced.
+// The module stays free of fs/path imports.
 
 // ── Scene timing (seconds) ──────────────────────────────────────────────────
 const T = {
-  title:        3.0,
-  summary:      4.0,
-  findingText:  3.0,   // beat A — report sentence
-  findingImage: 6.0,   // beat B — CT image + pointer + metadata
-  closing:      5.0,
+  title:        3.2,
+  summary:      4.2,
+  findingText:  3.2,   // beat A — report sentence
+  findingImage: 6.2,   // beat B — CT image + pointer + metadata
+  closing:      5.2,
   xfade:        0.8,   // cross-dissolve overlap
+  pause:        0.45,  // brief hold between scenes (room for future narration)
 };
+
+// ELVIE wordmark — matched to the viewer (.lv-logo): Bebas Neue, cyan #00d4e8,
+// 0.12em tracking, ~20px. Persistent, ~45% opacity, upper-left, never animated.
+const BRAND = { text: 'Elvie', color: '#00d4e8', font: "'Bebas Neue', sans-serif",
+  size: 22, tracking: '0.12em', opacity: 0.45, margin: 32 };
 
 function esc(str) {
   return String(str == null ? '' : str)
@@ -38,10 +50,15 @@ function esc(str) {
 function norm(v) { return String(v == null ? '' : v).trim(); }
 function f2(n) { return Number(n).toFixed(2); }
 
-// Resolve an evidence image to a usable <img src> value, honouring assetMode.
+// ── Evidence helpers ─────────────────────────────────────────────────────────
+function capturedEvidence(section) {
+  const arr = Array.isArray(section?.imageEvidence) ? section.imageEvidence : [];
+  return arr.find(e => e?.status === 'captured' && (e?.dataUrl || e?.assetPath)) || null;
+}
+export function sectionHasImage(section) { return !!capturedEvidence(section); }
+
 function resolveEvidenceUrl(section, { assetMode, projectDir, readAsset }) {
-  const evArr = Array.isArray(section?.imageEvidence) ? section.imageEvidence : [];
-  const captured = evArr.find(e => e?.status === 'captured' && (e?.dataUrl || e?.assetPath));
+  const captured = capturedEvidence(section);
   if (!captured) return null;
   if (captured.dataUrl) return captured.dataUrl;
   if (!captured.assetPath) return null;
@@ -60,18 +77,50 @@ function joinPath(base, rel) {
   return `${String(base).replace(/\/+$/, '')}/${String(rel).replace(/^\/+/, '')}`;
 }
 
-// Wrap the first occurrence of `phrase` in `sentence` with a highlight span.
-function highlightSentence(sentence, phrase) {
+const WINDOW_LABELS = {
+  brain: 'Brain window', brain_stroke: 'Stroke window', brain_hemorrhage: 'Hemorrhage window',
+  bone: 'Bone window', lung: 'Lung window', liver: 'Liver window', soft_tissue: 'Soft-tissue window',
+};
+function windowLabel(section) {
+  const ev = capturedEvidence(section);
+  const preset = norm(ev?.appliedPreset);
+  return WINDOW_LABELS[preset] || '';
+}
+
+// Finding-appropriate, subtle camera move. Origin follows the pointer when known
+// so a zoom pushes toward the lesion. Returns {fromVars, toVars}.
+function cameraMove(section) {
+  const kind = norm(section?.cameraKind) || 'zoom-soft';
+  const p = section?.pointer;
+  const ox = (p && Number.isFinite(Number(p.x))) ? (Number(p.x) * 100).toFixed(1) : '50';
+  const oy = (p && Number.isFinite(Number(p.y))) ? (Number(p.y) * 100).toFixed(1) : '45';
+  const origin = `${ox}% ${oy}%`;
+  switch (kind) {
+    case 'pan-up':   return { origin, from: 'scale: 1.06, yPercent: 4',  to: 'scale: 1.10, yPercent: -4' };
+    case 'still':    return { origin, from: 'scale: 1.015, yPercent: 0', to: 'scale: 1.04, yPercent: 0' };
+    case 'zoom':     return { origin, from: 'scale: 1.0, yPercent: 0',   to: 'scale: 1.15, yPercent: 0' };
+    case 'zoom-soft':
+    default:         return { origin, from: 'scale: 1.0, yPercent: 0',   to: 'scale: 1.08, yPercent: 0' };
+  }
+}
+
+// Wrap the first occurrence of `phrase` in `sentence` with a reading-sweep span.
+function highlightSentence(sentence, phrase, sweepId) {
   const s = norm(sentence);
   const p = norm(phrase);
   if (!s) return '';
   if (!p) return esc(s);
   const i = s.toLowerCase().indexOf(p.toLowerCase());
   if (i < 0) return esc(s);
-  const before = esc(s.slice(0, i));
-  const match = esc(s.slice(i, i + p.length));
-  const after = esc(s.slice(i + p.length));
-  return `${before}<span class="hl">${match}</span>${after}`;
+  return `${esc(s.slice(0, i))}<span class="hl" id="${sweepId}">${esc(s.slice(i, i + p.length))}</span>${esc(s.slice(i + p.length))}`;
+}
+
+// ── Persistent brand layer (outside clips; always visible) ───────────────────
+function brandLayer() {
+  return `
+  <div style="position:absolute;top:${BRAND.margin}px;left:${BRAND.margin + 4}px;z-index:1000;
+    opacity:${BRAND.opacity};font-family:${BRAND.font};font-size:${BRAND.size}px;
+    letter-spacing:${BRAND.tracking};color:${BRAND.color};pointer-events:none;line-height:1;">${BRAND.text}</div>`;
 }
 
 // A full-frame clip shell. Starts hidden (opacity:0); GSAP fades it in/out.
@@ -83,9 +132,7 @@ ${inner}
   </div>`;
 }
 
-// ── Scene builders ───────────────────────────────────────────────────────────
-// Each returns { html, tl: string[], duration }. tl entries are GSAP statements
-// with absolute composition times.
+// ── Scene builders — each returns { html, tl: string[], duration } ───────────
 
 export function buildTitleScene({ manifest, start, backdropUrl }) {
   const study = manifest.study || {};
@@ -98,9 +145,8 @@ export function buildTitleScene({ manifest, start, backdropUrl }) {
 
   const backdrop = backdropUrl
     ? `<div id="${id}-bg" style="position:absolute;inset:0;background-image:url('${esc(backdropUrl)}');
-         background-size:cover;background-position:center;filter:blur(26px) brightness(.28) saturate(.6);
-         transform:scale(1.15);"></div>
-       <div style="position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(6,6,16,.55) 0%,rgba(4,4,12,.92) 80%);"></div>`
+         background-size:cover;background-position:center;filter:blur(26px) brightness(.26) saturate(.6);transform:scale(1.15);"></div>
+       <div style="position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(6,6,16,.5) 0%,rgba(4,4,12,.93) 80%);"></div>`
     : `<div style="position:absolute;inset:0;background:linear-gradient(135deg,#06060f 0%,#0c0c1e 60%,#0a0a18 100%);"></div>`;
 
   const metaRows = [
@@ -113,26 +159,22 @@ export function buildTitleScene({ manifest, start, backdropUrl }) {
 
   const inner = `
     ${backdrop}
-    <div style="position:absolute;top:44px;left:56px;font-size:12px;letter-spacing:.28em;
-      color:#33415f;text-transform:uppercase;">Elvie Radiology</div>
     <div id="${id}-body" style="position:absolute;inset:0;display:flex;flex-direction:column;
       align-items:center;justify-content:center;opacity:0;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.3em;
-        margin-bottom:26px;">Case Presentation</div>
-      <div style="font-size:84px;font-weight:700;color:#eef3ff;letter-spacing:.01em;
-        text-align:center;line-height:1.05;text-shadow:0 2px 40px rgba(0,0,0,.6);">${exam}</div>
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.3em;margin-bottom:26px;">Case Presentation</div>
+      <div style="font-size:84px;font-weight:700;color:#eef3ff;letter-spacing:.01em;text-align:center;
+        line-height:1.05;text-shadow:0 2px 40px rgba(0,0,0,.6);">${exam}</div>
       <div style="margin-top:26px;text-align:center;">${metaRows}</div>
     </div>`;
 
   const tl = [
     `tl.to("#${id}", { opacity: 1, duration: 0.5 }, ${f2(start)});`,
     `tl.to("#${id}-body", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(start + 0.3)});`,
-    // slow push-in on the backdrop for life
     backdropUrl ? `tl.fromTo("#${id}-bg", { scale: 1.15 }, { scale: 1.24, duration: ${f2(dur)}, ease: "none" }, ${f2(start)});` : '',
     `tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + T.title)});`,
   ].filter(Boolean);
 
-  return { html: clip(id, start, dur, inner), tl, duration: T.title };
+  return { html: clip(id, start, dur, inner), tl, duration: T.title + T.pause };
 }
 
 export function buildSummaryScene({ summary, start }) {
@@ -141,14 +183,10 @@ export function buildSummaryScene({ summary, start }) {
   const text = esc(norm(summary) || 'Study summary unavailable.');
   const inner = `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
-    <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;
-      padding:0 200px;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;
-        margin-bottom:30px;">Summary</div>
-      <div id="${id}-text" style="font-size:46px;font-weight:600;color:#dfe7fb;line-height:1.4;
-        opacity:0;letter-spacing:-.005em;">${text}</div>
-      <div id="${id}-rule" style="height:2px;width:0;margin-top:40px;
-        background:linear-gradient(90deg,#2d4fa8,transparent);"></div>
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 200px;">
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:30px;">Summary</div>
+      <div id="${id}-text" style="font-size:46px;font-weight:600;color:#dfe7fb;line-height:1.4;opacity:0;letter-spacing:-.005em;">${text}</div>
+      <div id="${id}-rule" style="height:2px;width:0;margin-top:40px;background:linear-gradient(90deg,#2d4fa8,transparent);"></div>
     </div>`;
   const tl = [
     `tl.to("#${id}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(start)});`,
@@ -156,127 +194,141 @@ export function buildSummaryScene({ summary, start }) {
     `tl.to("#${id}-rule", { width: 360, duration: 1.2, ease: "power2.out" }, ${f2(start + 0.8)});`,
     `tl.to("#${id}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(start + T.summary)});`,
   ];
-  return { html: clip(id, start, dur, inner), tl, duration: T.summary };
+  return { html: clip(id, start, dur, inner), tl, duration: T.summary + T.pause };
 }
 
-export function buildFindingScene({ section, index, start, resolveOpts }) {
-  const n = index + 1;
-  const idA = `sc-find-${index}-a`;   // report sentence beat
-  const idB = `sc-find-${index}-b`;   // image beat
+export function buildFindingScene({ section, findingNumber, sceneIndex, start, resolveOpts }) {
+  const idA = `sc-find-${sceneIndex}-a`;   // report sentence beat
+  const idB = `sc-find-${sceneIndex}-b`;   // image beat
+  const sweepId = `${idA}-hl`;
   const sentence = norm(section.reportSentence) || norm(section.text);
-  const highlighted = highlightSentence(sentence, section.highlightPhrase);
+  const highlighted = highlightSentence(sentence, section.highlightPhrase, sweepId);
   const title = esc(norm(section.title));
   const imgUrl = resolveEvidenceUrl(section, resolveOpts);
   const pointer = section.pointer;
+  const orientation = esc(norm(section.orientation));
+  const winLabel = esc(windowLabel(section));
+  const cam = cameraMove(section);
 
   const textDur = T.findingText + T.xfade;
-  const imgStart = start + T.findingText;          // beats overlap by xfade
+  const imgStart = start + T.findingText - 0.35;   // image fades in underneath as phrase hands off
   const imgDur = T.findingImage + T.xfade;
 
-  // ── Beat A: report sentence ──
-  const beatA = clip(idA, start, textDur, `
-    <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
-    <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 190px;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:26px;">
-        Finding ${n} &nbsp;·&nbsp; Report</div>
-      <div id="${idA}-line" style="font-size:50px;font-weight:600;color:#54607e;line-height:1.45;opacity:0;">
-        ${highlighted}</div>
-    </div>`);
-
-  // ── Beat B: CT image (Ken Burns) + pointer + metadata card ──
+  // Beat B (image) emitted BEFORE beat A so the text sits on top and reveals the
+  // image as it lifts away.
   const imagePanel = imgUrl
-    ? `<img id="${idB}-img" src="${esc(imgUrl)}" alt="${title} — CT evidence"
-         style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;">`
-    : `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-         color:#2a2a40;font-size:16px;">No image captured</div>`;
+    ? `<img class="evidence-img" id="${idB}-img" src="${esc(imgUrl)}" alt="${title} — CT evidence"
+         style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;"/>`
+    : `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#2a2a40;font-size:16px;">No image captured</div>`;
 
-  // Pointer overlay sits in the same transformed stage so it tracks the zoom.
+  // Viewer-style framing: faint viewport border, soft vignette, gentle shadow.
+  const framing = `
+    <div style="position:absolute;inset:36px;border:1px solid rgba(90,150,220,.10);border-radius:6px;
+      box-shadow:0 30px 80px rgba(0,0,0,.55);pointer-events:none;"></div>
+    <div style="position:absolute;inset:0;pointer-events:none;
+      background:radial-gradient(ellipse at ${cam.origin},transparent 42%,rgba(2,2,8,.55) 100%);"></div>`;
+  const orientLabel = orientation
+    ? `<div style="position:absolute;top:52px;right:56px;font-family:monospace;font-size:13px;
+        letter-spacing:.14em;color:#3a5575;opacity:.8;">${orientation}</div>`
+    : '';
+
   let pointerHtml = '';
   if (pointer && imgUrl) {
     const px = (Number(pointer.x) * 100).toFixed(1);
     const py = (Number(pointer.y) * 100).toFixed(1);
     pointerHtml = `
-      <div id="${idB}-ptr" style="position:absolute;left:${px}%;top:${py}%;
-        width:120px;height:120px;margin:-60px 0 0 -60px;opacity:0;">
-        <div id="${idB}-ring" style="position:absolute;inset:0;border-radius:50%;
-          border:3px solid rgba(120,190,255,.9);box-shadow:0 0 22px rgba(90,160,255,.55),inset 0 0 14px rgba(90,160,255,.35);"></div>
-        <div style="position:absolute;inset:34px;border-radius:50%;border:2px solid rgba(150,205,255,.55);"></div>
+      <div id="${idB}-ptr" style="position:absolute;left:${px}%;top:${py}%;width:120px;height:120px;margin:-60px 0 0 -60px;opacity:0;">
+        <div id="${idB}-ring" style="position:absolute;inset:0;border-radius:50%;border:3px solid rgba(120,190,255,.9);
+          box-shadow:0 0 22px rgba(90,160,255,.55),inset 0 0 14px rgba(90,160,255,.35);"></div>
+        <div style="position:absolute;inset:34px;border-radius:50%;border:2px solid rgba(150,205,255,.5);"></div>
       </div>`;
   }
 
+  // Minimal, semi-transparent metadata card.
+  const metaLines = [];
+  if (section.navigable) {
+    metaLines.push(`<span style="color:#46587e;">Series</span> ${esc(String(section.seriesNumber ?? ''))}`);
+    metaLines.push(`<span style="color:#46587e;">Image</span> ${esc(String(section.imageNumber ?? ''))}`);
+  }
   const card = `
-    <div id="${idB}-card" style="position:absolute;left:80px;bottom:80px;opacity:0;
-      background:rgba(8,10,20,.66);backdrop-filter:blur(8px);border:1px solid #1c2b48;
-      border-radius:12px;padding:22px 28px;max-width:560px;">
-      <div style="font-size:12px;color:#3a5080;text-transform:uppercase;letter-spacing:.18em;margin-bottom:8px;">
-        Finding ${n}</div>
-      <div style="font-size:34px;font-weight:700;color:#fff;line-height:1.15;margin-bottom:14px;">${title}</div>
-      ${section.navigable ? `<div style="display:inline-flex;gap:18px;font-family:monospace;font-size:15px;color:#7ab8f5;">
-        <span><span style="color:#3a6090;">SERIES</span> ${esc(String(section.seriesNumber ?? ''))}</span>
-        <span><span style="color:#3a6090;">IMAGE</span> ${esc(String(section.imageNumber ?? ''))}</span>
-      </div>` : `<div style="font-size:14px;color:#b07830;">Text-only finding</div>`}
+    <div id="${idB}-card" style="position:absolute;left:64px;bottom:64px;opacity:0;
+      background:rgba(7,10,20,.42);backdrop-filter:blur(10px);border:1px solid rgba(70,90,140,.22);
+      border-radius:10px;padding:16px 20px;max-width:440px;">
+      <div style="font-size:22px;font-weight:600;color:#eef3ff;line-height:1.2;margin-bottom:${section.navigable || winLabel ? '10' : '0'}px;">${title}</div>
+      ${metaLines.length ? `<div style="font-family:monospace;font-size:13px;color:#8fb0dd;letter-spacing:.02em;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+      ${winLabel ? `<div style="font-size:12px;color:#46587e;margin-top:${metaLines.length ? '6' : '0'}px;">${winLabel}</div>` : ''}
     </div>`;
 
   const beatB = clip(idB, imgStart, imgDur, `
     <div style="position:absolute;inset:0;background:#04040a;"></div>
-    <div id="${idB}-stage" style="position:absolute;inset:0;transform-origin:55% 42%;">
+    <div id="${idB}-stage" style="position:absolute;inset:0;transform-origin:${cam.origin};">
       ${imagePanel}
       ${pointerHtml}
     </div>
-    <div style="position:absolute;inset:0;background:radial-gradient(ellipse at 60% 45%,transparent 40%,rgba(2,2,8,.55) 100%);"></div>
+    ${framing}
+    ${orientLabel}
     ${card}`);
 
-  // ── Timeline ──
+  const beatA = clip(idA, start, textDur, `
+    <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
+    <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 190px;">
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:26px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
+      <div id="${idA}-line" style="font-size:50px;font-weight:600;color:#54607e;line-height:1.45;opacity:0;">${highlighted}</div>
+    </div>`);
+
   const tl = [
-    // Beat A in/out
+    // Beat A appears
     `tl.to("#${idA}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(start)});`,
-    `tl.fromTo("#${idA}-line", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.9, ease: "power2.out" }, ${f2(start + 0.25)});`,
-    `tl.to("#${idA}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`,
-    // Beat B cross-dissolve in, Ken Burns, hold, fade out
-    `tl.to("#${idB}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`,
-    `tl.fromTo("#${idB}-stage", { scale: 1.0 }, { scale: 1.14, duration: ${f2(imgDur)}, ease: "none" }, ${f2(imgStart)});`,
-    `tl.fromTo("#${idB}-card", { opacity: 0, y: 26 }, { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" }, ${f2(imgStart + 0.5)});`,
-    `tl.to("#${idB}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart + T.findingImage)});`,
+    `tl.fromTo("#${idA}-line", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" }, ${f2(start + 0.25)});`,
   ];
+  // Reading sweep across the highlighted phrase
+  if (section.highlightPhrase && sentence.toLowerCase().includes(norm(section.highlightPhrase).toLowerCase())) {
+    tl.push(`tl.fromTo("#${sweepId}", { backgroundPosition: "100% 0" }, { backgroundPosition: "0% 0", duration: 1.0, ease: "power1.inOut" }, ${f2(start + 0.9)});`);
+  }
+  // Hand-off: the phrase lifts and fades while the image cross-dissolves in underneath
+  tl.push(`tl.to("#${idA}-wrap", { y: -60, scale: 0.92, opacity: 0, duration: ${f2(T.xfade + 0.2)}, ease: "power2.in" }, ${f2(imgStart - 0.1)});`);
+  tl.push(`tl.to("#${idA}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`);
+  // Beat B: image in, Ken Burns (finding-appropriate), card rises, fade out
+  tl.push(`tl.to("#${idB}", { opacity: 1, duration: ${f2(T.xfade)} }, ${f2(imgStart)});`);
+  tl.push(`tl.fromTo("#${idB}-stage", { ${cam.from} }, { ${cam.to}, duration: ${f2(imgDur)}, ease: "none" }, ${f2(imgStart)});`);
+  tl.push(`tl.fromTo("#${idB}-card", { opacity: 0, y: 26 }, { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" }, ${f2(imgStart + 0.6)});`);
+  tl.push(`tl.to("#${idB}", { opacity: 0, duration: ${f2(T.xfade)} }, ${f2(imgStart + T.findingImage)});`);
+
+  // Pointer: appear → expand → pulse twice → hold → fade away (all finite).
   if (pointer && imgUrl) {
-    tl.push(`tl.fromTo("#${idB}-ptr", { opacity: 0, scale: 1.6 }, { opacity: 1, scale: 1.0, duration: 0.7, ease: "back.out(2)" }, ${f2(imgStart + 0.9)});`);
-    // Gentle pulse on the ring. Finite repeat (HyperFrames seeks to exact frame
-    // times — an infinite repeat:-1 is non-deterministic). Half-cycle 1.1s, yoyo;
-    // fill the remainder of the image beat.
-    const pulseCycle = 1.1;
-    const pulseWindow = T.findingImage - 1.3 + T.xfade;
-    const pulseRepeat = Math.max(1, Math.floor(pulseWindow / pulseCycle) - 1);
-    tl.push(`tl.fromTo("#${idB}-ring", { scale: 0.86 }, { scale: 1.06, duration: ${f2(pulseCycle)}, ease: "sine.inOut", repeat: ${pulseRepeat}, yoyo: true }, ${f2(imgStart + 1.3)});`);
+    const t0 = imgStart + 1.1;
+    tl.push(`tl.fromTo("#${idB}-ptr", { opacity: 0, scale: 1.7 }, { opacity: 1, scale: 1.0, duration: 0.6, ease: "back.out(2)" }, ${f2(t0)});`);
+    tl.push(`tl.fromTo("#${idB}-ring", { scale: 0.9 }, { scale: 1.08, duration: 0.55, ease: "sine.inOut", repeat: 3, yoyo: true }, ${f2(t0 + 0.5)});`);
+    // hold, then fade away so it never distracts from the anatomy
+    tl.push(`tl.to("#${idB}-ptr", { opacity: 0, duration: 0.8, ease: "power1.out" }, ${f2(imgStart + T.findingImage - 1.4)});`);
   }
 
-  return { html: `${beatA}\n${beatB}`, tl, duration: T.findingText + T.findingImage };
+  return { html: `${beatB}\n${beatA}`, tl, duration: T.findingText + T.findingImage + T.pause };
 }
 
 export function buildClosingScene({ impression, start }) {
   const id = 'sc-closing';
-  const dur = T.closing + 0.6;
-  const bullets = (Array.isArray(impression) ? impression : []).map((b, i) => `
+  const dur = T.closing + 0.8;
+  const items = Array.isArray(impression) ? impression : [];
+  const bullets = items.map((b, i) => `
     <div id="${id}-b${i}" style="display:flex;align-items:flex-start;gap:18px;opacity:0;margin-bottom:22px;">
-      <div style="width:9px;height:9px;border-radius:50%;background:#5a9aff;margin-top:18px;flex:0 0 auto;
-        box-shadow:0 0 12px rgba(90,160,255,.6);"></div>
+      <div style="width:9px;height:9px;border-radius:50%;background:#5a9aff;margin-top:18px;flex:0 0 auto;box-shadow:0 0 12px rgba(90,160,255,.6);"></div>
       <div style="font-size:38px;color:#dfe7fb;line-height:1.3;">${esc(norm(b))}</div>
     </div>`).join('');
 
   const inner = `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#070712 0%,#090916 100%);"></div>
     <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 200px;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:38px;">
-        Impression</div>
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:38px;">Impression</div>
       ${bullets}
     </div>
     <div id="${id}-fade" style="position:absolute;inset:0;background:#000;opacity:0;"></div>`;
 
   const tl = [`tl.to("#${id}", { opacity: 1, duration: 0.6 }, ${f2(start)});`];
-  (Array.isArray(impression) ? impression : []).forEach((_, i) => {
-    tl.push(`tl.fromTo("#${id}-b${i}", { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.6 + i * 0.5)});`);
+  items.forEach((_, i) => {
+    tl.push(`tl.fromTo("#${id}-b${i}", { opacity: 0, x: -20 }, { opacity: 1, x: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.6 + i * 0.55)});`);
   });
-  // gentle fade to black at the very end
-  tl.push(`tl.to("#${id}-fade", { opacity: 1, duration: 1.0, ease: "power2.in" }, ${f2(start + T.closing - 0.4)});`);
+  tl.push(`tl.to("#${id}-fade", { opacity: 1, duration: 1.1, ease: "power2.in" }, ${f2(start + T.closing - 0.3)});`);
 
   return { html: clip(id, start, dur, inner), tl, duration: T.closing };
 }
@@ -285,7 +337,6 @@ export function buildClosingScene({ impression, start }) {
 
 /**
  * Generate a cinematic HyperFrames HTML composition from a PresentationManifest.
- *
  * @param {object} manifest
  * @param {object} [options]
  * @param {string} [options.projectDir]
@@ -298,26 +349,23 @@ export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-
   const compositionId = esc(norm(manifest?.accession || 'presentation'));
   const resolveOpts = { assetMode, projectDir, readAsset };
 
-  // Backdrop for the title = the first captured finding image (blurred/darkened).
-  const backdropUrl = sections.map(s => resolveEvidenceUrl(s, resolveOpts)).find(Boolean) || null;
+  // Data-driven: only findings with captured image evidence get an image scene.
+  const imageSections = sections
+    .map((section, idx) => ({ section, findingNumber: idx + 1 }))
+    .filter(({ section }) => sectionHasImage(section));
+
+  const backdropUrl = imageSections.map(({ section }) => resolveEvidenceUrl(section, resolveOpts)).find(Boolean) || null;
 
   const scenes = [];
   let cursor = 0;
+  const advance = (scene) => { scenes.push(scene); cursor += scene.duration; };
 
-  scenes.push(buildTitleScene({ manifest, start: cursor, backdropUrl }));
-  cursor += scenes[scenes.length - 1].duration;
-
-  scenes.push(buildSummaryScene({ summary: manifest.summary, start: cursor }));
-  cursor += scenes[scenes.length - 1].duration;
-
-  sections.forEach((section, idx) => {
-    const scene = buildFindingScene({ section, index: idx, start: cursor, resolveOpts });
-    scenes.push(scene);
-    cursor += scene.duration;
+  advance(buildTitleScene({ manifest, start: cursor, backdropUrl }));
+  advance(buildSummaryScene({ summary: manifest.summary, start: cursor }));
+  imageSections.forEach(({ section, findingNumber }, sceneIndex) => {
+    advance(buildFindingScene({ section, findingNumber, sceneIndex, start: cursor, resolveOpts }));
   });
-
-  scenes.push(buildClosingScene({ impression: manifest.impression, start: cursor }));
-  cursor += scenes[scenes.length - 1].duration;
+  advance(buildClosingScene({ impression: manifest.impression, start: cursor }));
 
   const totalDuration = Math.ceil(cursor + 0.5);
   const clipsHtml = scenes.map(s => s.html).join('\n');
@@ -329,18 +377,24 @@ export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=1920, height=1080"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Bebas+Neue&display=swap" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
     html, body { width:1920px; height:1080px; overflow:hidden; background:#06060e; font-family:'Inter', sans-serif; }
-    .hl { color:#eef3ff; font-weight:700; }
+    .hl {
+      background:linear-gradient(90deg,#eef3ff 0%,#eef3ff 50%,#54607e 50%,#54607e 100%);
+      background-size:200% 100%; background-position:100% 0;
+      -webkit-background-clip:text; background-clip:text;
+      -webkit-text-fill-color:transparent; color:transparent; font-weight:700;
+    }
   </style>
 </head>
 <body>
   <div id="root" data-composition-id="${compositionId}" data-start="0"
     data-duration="${totalDuration}" data-width="1920" data-height="1080">
 ${clipsHtml}
+${brandLayer()}
   </div>
   <script>
     window.__timelines = window.__timelines || {};

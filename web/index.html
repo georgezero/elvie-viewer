@@ -16703,6 +16703,49 @@ async function _autoLoadNativeViewer(accession) {
 
 window.openAgentxReport = openAgentxReport;
 
+// ── Generic MP4 video state + render trigger ──────────────────────────────────
+// Data-driven; works for any accession/modality. Reads render.json status and the
+// served MP4. No study-specific branching.
+async function resolveVideoState(accession, canRender) {
+  const state = { canRender: !!canRender, status: 'none', videoUrl: null };
+  if (!accession) return state;
+  const dir = `/generated/hyperframes/${encodeURIComponent(accession)}`;
+  const base = `${dir}/renders/${encodeURIComponent(accession)}.mp4`;
+  let meta = null;
+  try {
+    const r = await fetch(`${dir}/render.json`, { cache: 'no-store' });
+    if (r.ok) meta = await r.json();
+  } catch (_) { /* no render.json yet */ }
+  if (meta?.status === 'rendering') { state.status = 'rendering'; return state; }
+  let mp4Ok = false;
+  try { mp4Ok = (await fetch(base, { method: 'HEAD' })).ok; } catch (_) {}
+  if (mp4Ok) {
+    state.status = 'complete';
+    state.videoUrl = meta?.mp4Version ? `${base}?v=${encodeURIComponent(meta.mp4Version)}` : base;
+    return state;
+  }
+  if (meta?.status === 'failed') { state.status = 'failed'; return state; }
+  return state; // 'none' → Create button shown when canRender
+}
+
+// Trigger an MP4 render. Uses a pluggable backend hook when present (e.g. a dev
+// bridge that runs the build script); otherwise surfaces the generic command.
+async function requestVideoRender(accession) {
+  if (!accession) return;
+  if (typeof window.elvieCreateVideo === 'function') {
+    try {
+      await window.elvieCreateVideo(accession);
+      showRpError('Rendering video… re-open PRESENT to check status.');
+    } catch (e) {
+      showRpError('Video render failed to start: ' + (e?.message || e));
+    }
+    return;
+  }
+  const cmd = `npm run build:hyperframes -- --accession ${accession}`;
+  try { await navigator.clipboard?.writeText(cmd); } catch (_) {}
+  showRpError('No render backend configured. Command copied to clipboard: ' + cmd);
+}
+
 // ── Hyperframes presentation launch ───────────────────────────────────────────
 // Thin glue: read the active report context, delegate manifest building + launch
 // to the isolated presentation adapter, and surface guardrail messages in the
@@ -16774,33 +16817,25 @@ async function launchHyperframesPresentation(opts = {}) {
       window.__ELVIE_TEST_LAST_MANIFEST_URL__ = res.manifestUrl || null;
     }
 
-    // Check whether a pre-rendered MP4 exists for this accession (written by the
-    // render:hyperframes script). Append a content-version query (?v=<hash>) so a
-    // re-rendered MP4 is never masked by a CDN/proxy cache keyed on the bare URL.
+    // Generic MP4 state — data-driven, no study/modality-specific logic.
+    // canRender = the manifest has at least one captured image evidence.
+    // status comes from render.json (rendering/complete/failed); a complete render
+    // links to the served MP4 with a ?v=<hash> cache-busting version.
     const accession = context?.accession;
-    let videoUrl;
-    if (accession) {
-      const base = `/generated/hyperframes/${encodeURIComponent(accession)}/renders/${encodeURIComponent(accession)}.mp4`;
-      try {
-        // render.json carries mp4Version (content hash prefix). Prefer it; it also
-        // confirms a render exists. Fall back to a plain HEAD check.
-        let version = null;
-        try {
-          const metaRes = await fetch(`/generated/hyperframes/${encodeURIComponent(accession)}/render.json`, { cache: 'no-store' });
-          if (metaRes.ok) { const meta = await metaRes.json(); version = meta?.mp4Version || null; }
-        } catch (_) { /* no render.json — fall through to HEAD */ }
-        const chk = await fetch(base, { method: 'HEAD' });
-        if (chk.ok) videoUrl = version ? `${base}?v=${encodeURIComponent(version)}` : base;
-      } catch (_) { /* server not serving generated/ or file absent — ignore */ }
-    }
+    const canRender = Array.isArray(res.manifest?.sections) && res.manifest.sections.some(s =>
+      Array.isArray(s.imageEvidence) && s.imageEvidence.some(e => e?.status === 'captured' && (e.dataUrl || e.assetPath))
+    );
+    const videoState = await resolveVideoState(accession, canRender);
 
     // Show the local preview deck ("Preview Deck"). The deck is rendered to MP4
-    // by the HyperFrames CLI — there is no external launch. The user can watch a
-    // rendered MP4 (if present) or export the package to render one.
+    // by the HyperFrames CLI. "Create Video (MP4)" triggers a render via an
+    // optional pluggable hook (window.elvieCreateVideo); otherwise it surfaces
+    // the generic build command. No CT-specific logic here.
     previewMod.openPresentationPreview(res.manifest, {
       manifestUrl: res.manifestUrl,
-      videoUrl,
-      onExport: () => publisherMod.downloadManifest(res.manifest)
+      videoState,
+      onExport: () => publisherMod.downloadManifest(res.manifest),
+      onCreateVideo: () => requestVideoRender(accession)
     });
 
     return res;

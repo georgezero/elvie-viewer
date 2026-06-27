@@ -255,6 +255,8 @@ export function buildPresentationManifest(context, options = {}) {
       s.reportSentence = sb.reportSentence;
       s.highlightPhrase = sb.highlightPhrase;
       s.pointer = sb.pointer;
+      s.orientation = sb.orientation;
+      s.cameraKind = sb.cameraKind;
       s.narration = sb.narration;
     }
   });
