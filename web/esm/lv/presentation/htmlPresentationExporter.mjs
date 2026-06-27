@@ -21,6 +21,13 @@
 //                 into the ELVIE end card
 //   EndCardScene  ELVIE wordmark centered, fades to black
 //
+// presentationStyle option — passed to exportHtmlComposition:
+//   "v1" (default) — finished, stable, byte-identical to prior renders
+//   "v2"           — narrative-driven: faster report→finding transition, inverted
+//                    hierarchy (patient explanation above clinical text), patient
+//                    explanation in a card, delayed pointer, numbered closing items,
+//                    multi-cycle backdrop, smaller end card wordmark
+//
 // Data-driven scene selection: a finding gets an image scene only when it has
 // captured image evidence. Non-localized positives are still represented in the
 // summary, impression, and narration — they simply get no image scene.
@@ -39,6 +46,20 @@ const T = {
   endCard:      3.2,   // ELVIE end card hold
   xfade:        0.8,   // cross-dissolve overlap
   pause:        0.45,  // brief hold between scenes
+};
+
+// ── V2 scene timing (seconds) ───────────────────────────────────────────────
+// Designed for a more narrative pace: faster report→finding bridge,
+// longer image hold for the delayed pointer, more pause between closing items.
+const TV2 = {
+  title:        6.5,   // multi-cycle backdrop dissolve needs more time
+  summary:      4.2,   // shared with V1
+  findingText:  3.2,   // shorter — report is a bridge, not a slide
+  findingImage: 7.5,   // longer — delayed pointer needs room
+  closing:      7.0,   // numbered items with longer stagger
+  endCard:      3.5,   // more negative space, slightly longer hold
+  xfade:        0.8,
+  pause:        0.45,
 };
 
 // ELVIE wordmark — matched to the viewer (.lv-logo): Bebas Neue, cyan #00d4e8,
@@ -417,6 +438,312 @@ export function buildEndCardScene({ start }) {
   return { html: clip(id, start, dur, inner), tl, duration: T.endCard + T.pause };
 }
 
+// ── V2 scene builders ─────────────────────────────────────────────────────────
+// V2 presentationStyle only. V1 functions above are untouched.
+
+export function buildTitleSceneV2({ manifest, start, backdropUrls = [] }) {
+  const study = manifest.study || {};
+  const exam = esc(norm(study.examName) || norm(manifest.presentationTitle) || 'STUDY');
+  const acc = esc(norm(study.accession || manifest.accession));
+  const date = norm(study.studyDate);
+  const indication = norm(study.clinicalIndication);
+  const dur = TV2.title + TV2.xfade;
+  const id = 'sc-title';
+
+  // Backdrop: all available slices as stacked layers. Cross-dissolve cycles
+  // through them (for 2 images: bd0→bd1→bd0). Barely perceptible on blurred
+  // frames; creates life without motion.
+  const n = Math.min(backdropUrls.length, 5);
+  const bdLayers = n > 0
+    ? backdropUrls.slice(0, n).map((url, i) => `
+      <div id="${id}-bd${i}" style="position:absolute;inset:0;
+        background-image:url('${esc(url)}');background-size:cover;background-position:center;
+        filter:blur(30px) brightness(.18) saturate(.4);transform:scale(1.20);
+        opacity:${i === 0 ? '1' : '0'};"></div>`).join('')
+    : `<div style="position:absolute;inset:0;background:linear-gradient(135deg,#05050e 0%,#0b0b1c 60%,#080816 100%);"></div>`;
+
+  // Separate vignette layer — animated for a very slow breathing effect.
+  const vignetteEl = n > 0
+    ? `<div id="${id}-vignette" style="position:absolute;inset:0;
+        background:radial-gradient(ellipse at center,rgba(6,6,16,.52) 0%,rgba(3,3,10,.94) 80%);"></div>`
+    : '';
+
+  const metaRows = [
+    acc ? `Accession ${acc}` : '',
+    date ? `Study date ${esc(date)}` : '',
+    indication ? `Indication: ${esc(indication)}` : '',
+  ].filter(Boolean).map(r =>
+    `<div style="font-size:32px;color:#4e6590;letter-spacing:.04em;margin-top:18px;">${r}</div>`
+  ).join('');
+
+  const inner = `
+    ${bdLayers}
+    ${vignetteEl}
+    <div id="${id}-body" style="position:absolute;inset:0;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;opacity:0;">
+      <div style="font-size:96px;font-weight:700;color:#eef3ff;letter-spacing:.02em;text-align:center;
+        line-height:1.05;text-shadow:0 4px 56px rgba(0,0,0,.8);">${exam}</div>
+      <div id="${id}-rule" style="width:0;height:1.5px;margin-top:30px;
+        background:linear-gradient(90deg,rgba(0,212,232,.55),rgba(0,212,232,.08));"></div>
+      <div id="${id}-meta" style="margin-top:14px;text-align:center;opacity:0;">${metaRows}</div>
+    </div>`;
+
+  // Build backdrop cross-dissolve tweens for N images.
+  // For 2 images: two dissolves (bd0→bd1 and back bd1→bd0).
+  // For N>2: one dissolve per sequential pair (bd0→bd1→bd2…).
+  function mkDissolves() {
+    if (n <= 1) return [];
+    const out = [];
+    if (n === 2) {
+      // Forward: t+1.5 over 2.0s
+      out.push(`tl.to("#${id}-bd0", { opacity: 0, duration: 2.0, ease: "power1.inOut" }, ${f2(start + 1.5)});`);
+      out.push(`tl.to("#${id}-bd1", { opacity: 1, duration: 2.0, ease: "power1.inOut" }, ${f2(start + 1.5)});`);
+      // Reverse: t+4.6 over 1.7s (completes before exit at TV2.title)
+      out.push(`tl.to("#${id}-bd1", { opacity: 0, duration: 1.7, ease: "power1.inOut" }, ${f2(start + 4.6)});`);
+      out.push(`tl.to("#${id}-bd0", { opacity: 1, duration: 1.7, ease: "power1.inOut" }, ${f2(start + 4.6)});`);
+    } else {
+      // Spread N-1 dissolves evenly across [start+1.5, start+TV2.title-1.5]
+      const window = TV2.title - 3.0;
+      const interval = window / (n - 1);
+      for (let i = 0; i < n - 1; i++) {
+        const t = start + 1.5 + i * interval;
+        const d = Math.min(1.8, interval * 0.85);
+        out.push(`tl.to("#${id}-bd${i}", { opacity: 0, duration: ${f2(d)}, ease: "power1.inOut" }, ${f2(t)});`);
+        out.push(`tl.to("#${id}-bd${i+1}", { opacity: 1, duration: ${f2(d)}, ease: "power1.inOut" }, ${f2(t)});`);
+      }
+    }
+    return out;
+  }
+
+  const tl = [
+    `tl.to("#${id}", { opacity: 1, duration: 0.5 }, ${f2(start)});`,
+    // Title fades in first; rule draws; metadata follows
+    `tl.to("#${id}-body", { opacity: 1, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.2)});`,
+    `tl.to("#${id}-rule", { width: 200, duration: 0.8, ease: "power2.out" }, ${f2(start + 0.55)});`,
+    `tl.to("#${id}-meta", { opacity: 1, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.75)});`,
+    // Breathing vignette: barely perceptible single pulse over the scene hold
+    ...(n > 0
+      ? [`tl.to("#${id}-vignette", { opacity: 0.65, duration: 2.2, ease: "power1.inOut" }, ${f2(start + 1.5)});`,
+         `tl.to("#${id}-vignette", { opacity: 1.0, duration: 2.0, ease: "power1.inOut" }, ${f2(start + 4.2)});`]
+      : []),
+    ...mkDissolves(),
+    `tl.to("#${id}", { opacity: 0, duration: ${f2(TV2.xfade)} }, ${f2(start + TV2.title)});`,
+    `tl.set("#${id}", { opacity: 0 }, ${f2(start + TV2.title + TV2.xfade)});`,
+  ];
+
+  return { html: clip(id, start, dur, inner), tl, duration: TV2.title + TV2.pause };
+}
+
+export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start, resolveOpts }) {
+  const idA = `sc-find-${sceneIndex}-a`;
+  const idB = `sc-find-${sceneIndex}-b`;
+  const sweepId = `${idA}-hl`;
+  const sentence = norm(section.reportSentence) || norm(section.text);
+  const highlighted = highlightSentence(sentence, section.highlightPhrase, sweepId);
+  const title = esc(norm(section.title));
+  const imgUrl = resolveEvidenceUrl(section, resolveOpts);
+  const pointer = section.pointer;
+  const orientation = esc(norm(section.orientation));
+  const winLabel = esc(windowLabel(section));
+  const vOrigin = vignetteOrigin(section);
+  const hasHighlight = !!(section.highlightPhrase && sentence.toLowerCase()
+    .includes(norm(section.highlightPhrase).toLowerCase()));
+
+  const textDur = TV2.findingText + TV2.xfade;
+  // Image starts earlier than V1 — more overlap so the transition feels like
+  // the phrase is being extracted directly from the report into the image.
+  const imgStart = start + TV2.findingText - 0.8;
+  const imgDur = TV2.findingImage + TV2.xfade;
+
+  // Beat B built first (sits underneath)
+  const imageEl = imgUrl
+    ? `<img class="evidence-img" id="${idB}-img" src="${esc(imgUrl)}" alt="${title} — evidence"
+         style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;"/>`
+    : `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#2a2a40;font-size:16px;">No image captured</div>`;
+
+  const orientLabel = orientation
+    ? `<div style="position:absolute;top:52px;right:56px;font-family:monospace;font-size:13px;
+        letter-spacing:.14em;color:#3a5575;opacity:.8;">${orientation}</div>`
+    : '';
+
+  let pointerHtml = '';
+  if (pointer && imgUrl) {
+    const px = (Number(pointer.x) * 100).toFixed(1);
+    const py = (Number(pointer.y) * 100).toFixed(1);
+    pointerHtml = `
+      <div id="${idB}-ptr" style="position:absolute;left:${px}%;top:${py}%;width:120px;height:120px;margin:-60px 0 0 -60px;opacity:0;">
+        <div id="${idB}-ring" style="position:absolute;inset:0;border-radius:50%;border:3px solid rgba(120,190,255,.9);
+          box-shadow:0 0 22px rgba(90,160,255,.55),inset 0 0 14px rgba(90,160,255,.35);"></div>
+        <div style="position:absolute;inset:34px;border-radius:50%;border:2px solid rgba(150,205,255,.5);"></div>
+      </div>`;
+  }
+
+  const metaLines = [];
+  if (section.navigable) {
+    metaLines.push(`<span style="color:#3c5070;">Series</span> ${esc(String(section.seriesNumber ?? ''))}`);
+    metaLines.push(`<span style="color:#3c5070;">Image</span> ${esc(String(section.imageNumber ?? ''))}`);
+  }
+  const findingBodyText = norm(section.text);
+  const patientText = norm(section.patientFriendlyExplanation);
+
+  // ── V2 left narrative panel — inverted hierarchy ──────────────────────────────
+  // Patient explanation is visually dominant (inside an elevated card, 38px).
+  // Clinical description is de-emphasized (30px, muted colour).
+  // Metadata is reduced (18px) — series/image are context, not headline.
+  // Title remains the anchor (52px bold).
+  const patientCard = patientText ? `
+    <div style="background:rgba(255,255,255,0.04);border-radius:10px;
+      padding:18px 24px;border:1px solid rgba(255,255,255,0.06);
+      flex-shrink:0;overflow:hidden;">
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.18em;
+        margin-bottom:10px;">For patients</div>
+      <div style="font-size:38px;color:#e0eeff;line-height:1.45;
+        display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;">${esc(patientText)}</div>
+    </div>` : '';
+
+  const leftPanel = `
+    <div id="${idB}-panel" style="position:absolute;left:0;top:0;bottom:0;width:38%;
+      background:rgba(6,8,18,.65);backdrop-filter:blur(14px);
+      border-right:1px solid rgba(70,90,140,.18);overflow:hidden;opacity:0;">
+      <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+        justify-content:center;padding:52px 48px 52px 60px;overflow:hidden;">
+        <div style="font-size:16px;color:#2e4268;text-transform:uppercase;
+          letter-spacing:.22em;margin-bottom:16px;flex-shrink:0;">Finding ${findingNumber}</div>
+        <div style="font-size:52px;font-weight:700;color:#eef3ff;line-height:1.18;
+          margin-bottom:18px;flex-shrink:0;">${title}</div>
+        ${metaLines.length ? `<div style="font-family:monospace;font-size:18px;color:#7a8ead;letter-spacing:.02em;
+          margin-bottom:${winLabel ? '8px' : '20px'};flex-shrink:0;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+        ${winLabel ? `<div style="font-size:17px;color:#506080;margin-bottom:20px;flex-shrink:0;">${winLabel}</div>` : ''}
+        <div style="width:36px;height:1px;background:rgba(80,110,160,.4);margin-bottom:22px;flex-shrink:0;"></div>
+        ${findingBodyText ? `<div style="font-size:30px;color:#a8bed8;line-height:1.55;
+          margin-bottom:${patientText ? '20px' : '0'};flex-shrink:0;
+          display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;">${esc(findingBodyText)}</div>` : ''}
+        ${patientCard}
+      </div>
+    </div>`;
+
+  const rightStage = `
+    <div id="${idB}-stage" style="position:absolute;left:38%;right:0;top:0;bottom:0;">
+      ${imageEl}
+      <div style="position:absolute;inset:0;pointer-events:none;
+        background:radial-gradient(ellipse at center,transparent 44%,rgba(2,2,8,.50) 100%);"></div>
+      ${pointerHtml}
+      <div style="position:absolute;inset:28px;border:1px solid rgba(90,150,220,.09);border-radius:6px;
+        box-shadow:0 30px 80px rgba(0,0,0,.45);pointer-events:none;"></div>
+    </div>`;
+
+  const beatB = clip(idB, imgStart, imgDur, `
+    <div style="position:absolute;inset:0;background:#04040a;"></div>
+    ${leftPanel}
+    ${rightStage}
+    ${orientLabel}`);
+
+  const beatA = clip(idA, start, textDur, `
+    <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
+    <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 190px;">
+      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:26px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
+      <div id="${idA}-line" style="font-size:50px;font-weight:600;color:#54607e;line-height:1.45;opacity:0;">${highlighted}</div>
+    </div>`);
+
+  const tl = [
+    `tl.to("#${idA}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(start)});`,
+    `tl.fromTo("#${idA}-line", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.2)});`,
+  ];
+
+  if (hasHighlight) {
+    // Sweep starts sooner — report is a source, not a slide to dwell on.
+    tl.push(`tl.fromTo("#${sweepId}", { backgroundPosition: "100% 0" }, { backgroundPosition: "0% 0", duration: 0.8, ease: "power1.inOut" }, ${f2(start + 0.7)});`);
+    // Highlighted phrase enlarges slightly: the phrase is being "extracted."
+    // inline-block needed for scale to work on a span.
+    tl.push(`tl.fromTo("#${sweepId}", { display: "inline-block", scale: 1.0 }, { scale: 1.05, transformOrigin: "left center", duration: 0.3, ease: "power2.out" }, ${f2(start + 1.6)});`);
+  }
+
+  // Beat A lifts and fades; image cross-dissolves in with more overlap than V1.
+  tl.push(`tl.to("#${idA}-wrap", { y: -50, scale: 0.93, opacity: 0, duration: ${f2(TV2.xfade + 0.2)}, ease: "power2.in" }, ${f2(imgStart - 0.1)});`);
+  tl.push(`tl.to("#${idA}", { opacity: 0, duration: ${f2(TV2.xfade)} }, ${f2(imgStart)});`);
+  tl.push(`tl.set("#${idA}", { opacity: 0 }, ${f2(imgStart + TV2.xfade)});`);
+
+  // Beat B: image static — no camera move. Left panel delayed so image
+  // registers first, then narrative context appears.
+  tl.push(`tl.to("#${idB}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(imgStart)});`);
+  tl.push(`tl.to("#${idB}-panel", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(imgStart + 0.6)});`);
+  tl.push(`tl.to("#${idB}", { opacity: 0, duration: ${f2(TV2.xfade)} }, ${f2(imgStart + TV2.findingImage)});`);
+  tl.push(`tl.set("#${idB}", { opacity: 0 }, ${f2(imgStart + TV2.findingImage + TV2.xfade)});`);
+
+  // Pointer: image fades in over 0.8s → hold 0.4s → pointer appears.
+  // Total delay before pointer = 0.8 + 0.4 = 1.2s after imgStart, vs V1's 1.1s.
+  // The extra wait lets viewers orient before attention is directed.
+  if (pointer && imgUrl) {
+    const t0 = imgStart + 1.4;
+    tl.push(`tl.fromTo("#${idB}-ptr", { opacity: 0, scale: 1.7 }, { opacity: 1, scale: 1.0, duration: 0.6, ease: "back.out(2)" }, ${f2(t0)});`);
+    tl.push(`tl.fromTo("#${idB}-ring", { scale: 0.9 }, { scale: 1.08, duration: 0.55, ease: "sine.inOut", repeat: 3, yoyo: true }, ${f2(t0 + 0.5)});`);
+    tl.push(`tl.to("#${idB}-ptr", { opacity: 0, duration: 0.8, ease: "power1.out" }, ${f2(imgStart + TV2.findingImage - 1.4)});`);
+  }
+
+  return { html: `${beatB}\n${beatA}`, tl, duration: TV2.findingText + TV2.findingImage + TV2.pause };
+}
+
+export function buildClosingSceneV2({ impression, start }) {
+  const id = 'sc-closing';
+  const items = Array.isArray(impression) ? impression : [];
+
+  // Longer stagger than V1 — each item is a standalone statement.
+  const staggerGap    = 1.6;
+  const itemFade      = 0.65;
+  const holdAfterLast = 1.2;
+  const activeDur = 0.5 + items.length * staggerGap + holdAfterLast;
+  const closingDur = Math.max(TV2.closing, activeDur);
+  const dur = closingDur + TV2.xfade;
+
+  // Numbered items: number stacked above text (conference summary aesthetic).
+  const items_html = items.map((b, i) => `
+    <div id="${id}-b${i}" style="opacity:0;margin-bottom:52px;">
+      <div style="font-size:20px;font-weight:700;color:#2a4478;letter-spacing:.14em;
+        margin-bottom:8px;">${i + 1}</div>
+      <div style="font-size:56px;font-weight:600;color:#e8eefa;line-height:1.25;">${esc(norm(b))}</div>
+    </div>`).join('');
+
+  const inner = `
+    <div style="position:absolute;inset:0;background:linear-gradient(160deg,#070712 0%,#090916 100%);"></div>
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+      justify-content:center;padding:0 180px;">
+      ${items_html}
+    </div>`;
+
+  const tl = [`tl.to("#${id}", { opacity: 1, duration: 0.6 }, ${f2(start)});`];
+  items.forEach((_, i) => {
+    tl.push(`tl.to("#${id}-b${i}", { opacity: 1, duration: ${f2(itemFade)}, ease: "power2.out" }, ${f2(start + 0.5 + i * staggerGap)});`);
+  });
+  tl.push(`tl.to("#${id}", { opacity: 0, duration: ${f2(TV2.xfade)} }, ${f2(start + closingDur)});`);
+  tl.push(`tl.set("#${id}", { opacity: 0 }, ${f2(start + closingDur + TV2.xfade)});`);
+
+  return { html: clip(id, start, dur, inner), tl, duration: closingDur + TV2.pause };
+}
+
+export function buildEndCardSceneV2({ start }) {
+  const id = 'sc-endcard';
+  const dur = TV2.endCard + TV2.xfade;
+
+  // Wordmark ~17% smaller than V1 (100px vs 120px) — more negative space,
+  // more breathing room, less visual weight.
+  const inner = `
+    <div style="position:absolute;inset:0;background:#04040a;"></div>
+    <div id="${id}-wordmark" style="position:absolute;inset:0;display:flex;align-items:center;
+      justify-content:center;opacity:0;">
+      <div style="font-family:${BRAND.font};font-size:100px;letter-spacing:0.08em;
+        color:${BRAND.color};line-height:1;">${BRAND.text.toUpperCase()}</div>
+    </div>`;
+
+  const tl = [
+    `tl.to("#${id}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(start)});`,
+    `tl.to("#${id}-wordmark", { opacity: 1, duration: 0.9, ease: "power2.out" }, ${f2(start + 0.4)});`,
+    `tl.to("#${id}", { opacity: 0, duration: ${f2(TV2.xfade)} }, ${f2(start + TV2.endCard)});`,
+    `tl.set("#${id}", { opacity: 0 }, ${f2(start + TV2.endCard + TV2.xfade)});`,
+  ];
+
+  return { html: clip(id, start, dur, inner), tl, duration: TV2.endCard + TV2.pause };
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -426,9 +753,10 @@ export function buildEndCardScene({ start }) {
  * @param {string} [options.projectDir]
  * @param {("data-url"|"relative"|"absolute-file")} [options.assetMode="data-url"]
  * @param {function} [options.readAsset]
+ * @param {("v1"|"v2")} [options.presentationStyle="v1"]  style variant to use
  * @returns {string} complete HTML
  */
-export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-url', readAsset } = {}) {
+export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-url', readAsset, presentationStyle = 'v1' } = {}) {
   const sections = Array.isArray(manifest?.sections) ? manifest.sections : [];
   const compositionId = esc(norm(manifest?.accession || 'presentation'));
   const resolveOpts = { assetMode, projectDir, readAsset };
@@ -447,13 +775,23 @@ export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-
   let cursor = 0;
   const advance = (scene) => { scenes.push(scene); cursor += scene.duration; };
 
-  advance(buildTitleScene({ manifest, start: cursor, backdropUrls }));
-  advance(buildSummaryScene({ summary: manifest.summary, start: cursor }));
-  imageSections.forEach(({ section, findingNumber }, sceneIndex) => {
-    advance(buildFindingScene({ section, findingNumber, sceneIndex, start: cursor, resolveOpts }));
-  });
-  advance(buildClosingScene({ impression: manifest.impression, start: cursor }));
-  advance(buildEndCardScene({ start: cursor }));
+  if (presentationStyle === 'v2') {
+    advance(buildTitleSceneV2({ manifest, start: cursor, backdropUrls }));
+    advance(buildSummaryScene({ summary: manifest.summary, start: cursor }));
+    imageSections.forEach(({ section, findingNumber }, sceneIndex) => {
+      advance(buildFindingSceneV2({ section, findingNumber, sceneIndex, start: cursor, resolveOpts }));
+    });
+    advance(buildClosingSceneV2({ impression: manifest.impression, start: cursor }));
+    advance(buildEndCardSceneV2({ start: cursor }));
+  } else {
+    advance(buildTitleScene({ manifest, start: cursor, backdropUrls }));
+    advance(buildSummaryScene({ summary: manifest.summary, start: cursor }));
+    imageSections.forEach(({ section, findingNumber }, sceneIndex) => {
+      advance(buildFindingScene({ section, findingNumber, sceneIndex, start: cursor, resolveOpts }));
+    });
+    advance(buildClosingScene({ impression: manifest.impression, start: cursor }));
+    advance(buildEndCardScene({ start: cursor }));
+  }
 
   const totalDuration = Math.ceil(cursor + 0.5);
   const clipsHtml = scenes.map(s => s.html).join('\n');

@@ -71,13 +71,27 @@ async function frameContainsImage(framePath) {
 const { resolveTarget } = await import(`${ROOT}/scripts/lib/resolveTarget.mjs`);
 const { accession, label: targetName } = resolveTarget(process.argv.slice(2));
 
-console.log(`\n=== HyperFrames MP4 render: ${targetName} (${accession}) ===\n`);
+// --style v2 flag: selects the V2 presentation style and writes to style-suffixed
+// output files so V1 and V2 artifacts coexist in the same project directory.
+const styleArg = process.argv.find((a, i, arr) => (a === '--style') && arr[i + 1]) || null;
+const presentationStyle = styleArg ? process.argv[process.argv.indexOf('--style') + 1] : 'v1';
+const styleSuffix = presentationStyle !== 'v1' ? `-${presentationStyle}` : '';
 
+console.log(`\n=== HyperFrames MP4 render: ${targetName} (${accession}) [style: ${presentationStyle}] ===\n`);
+
+// projectDir always points at the V1 project (where presentation.json and
+// evidence assets live). For V2 the composition and renders go to a separate
+// sibling directory so both HyperFrames projects can coexist and each has
+// exactly one index.html entry point.
 const projectDir = resolve(ROOT, 'web', 'generated', 'hyperframes', accession);
-const rendersDir = resolve(projectDir, 'renders');
+const compositionDir = presentationStyle !== 'v1'
+  ? resolve(ROOT, 'web', 'generated', 'hyperframes', `${accession}-${presentationStyle}`)
+  : projectDir;
+const rendersDir = resolve(compositionDir, 'renders');
 mkdirSync(rendersDir, { recursive: true });
+mkdirSync(projectDir, { recursive: true });
 
-const renderJsonPath = resolve(projectDir, 'render.json');
+const renderJsonPath = resolve(compositionDir, 'render.json');
 // render.json carries a status field so the Preview Deck can show
 // Create / Rendering… / Watch / Retry without any study-specific logic.
 function writeRenderStatus(status, extra = {}) {
@@ -191,8 +205,9 @@ const html = exportHtmlComposition(manifest, {
   projectDir,
   assetMode: 'data-url',
   readAsset,
+  presentationStyle,
 });
-const indexPath = resolve(projectDir, 'index.html');
+const indexPath = resolve(compositionDir, 'index.html');
 writeFileSync(indexPath, html, 'utf8');
 console.log(`\nComposition:  ${indexPath}`);
 console.log(`Embedded evidence images (inline data URLs): ${embeddedAssets}`);
@@ -229,12 +244,12 @@ if (hashMismatch) {
   process.exit(2);
 }
 
-writeFileSync(resolve(projectDir, 'meta.json'), JSON.stringify({
+writeFileSync(resolve(compositionDir, 'meta.json'), JSON.stringify({
   id: accession, name: manifest.presentationTitle, targetName, accession,
-  evidenceSource, createdAt: new Date().toISOString(),
+  presentationStyle, evidenceSource, createdAt: new Date().toISOString(),
 }, null, 2));
 
-writeFileSync(resolve(projectDir, 'hyperframes.json'), JSON.stringify({
+writeFileSync(resolve(compositionDir, 'hyperframes.json'), JSON.stringify({
   '$schema': 'https://hyperframes.heygen.com/schema/hyperframes.json',
   registry: 'https://raw.githubusercontent.com/heygen-com/hyperframes/main/registry',
   paths: { blocks: 'compositions', components: 'compositions/components', assets: 'assets' },
@@ -246,13 +261,13 @@ writeFileSync(resolve(projectDir, 'hyperframes.json'), JSON.stringify({
 // element actually loaded (naturalWidth > 0). If the image is missing here it
 // will be missing in the MP4 too — fail fast rather than render a broken video.
 
-const debugDir = resolve(projectDir, 'debug');
+const debugDir = resolve(compositionDir, 'debug');
 const shotDir  = resolve(ROOT, 'test-artifacts', 'hyperframes');
 mkdirSync(debugDir, { recursive: true });
 mkdirSync(shotDir, { recursive: true });
 
 const renderInputShot = resolve(debugDir, 'render-input-slide-1.png');
-const compositionShot = resolve(shotDir, `composition-${accession}.png`);
+const compositionShot = resolve(shotDir, `composition-${accession}${styleSuffix}.png`);
 
 let inputImageOk = false;
 let frameSeekTime = SLIDE1_MID; // updated from the DOM below; used for the post-render frame too
@@ -306,7 +321,7 @@ if (!inputImageOk && embeddedAssets > 0) {
 
 // ── 4. Run HyperFrames render ──────────────────────────────────────────────────
 
-const outputPath = resolve(rendersDir, `${accession}.mp4`);
+const outputPath = resolve(rendersDir, `${accession}${styleSuffix}.mp4`);
 const hfBin      = resolve(ROOT, 'node_modules', '.bin', 'hyperframes');
 
 const totalDuration = 3 + 4 + imageSceneCount * 9 + 5; // title+summary+image-findings+closing
@@ -315,7 +330,7 @@ writeRenderStatus('rendering', { startedAt: new Date().toISOString() });
 
 const result = spawnSync(
   hfBin,
-  ['render', projectDir, '--output', outputPath, '--quality', 'draft'],
+  ['render', compositionDir, '--output', outputPath, '--quality', 'draft'],
   { stdio: 'inherit', cwd: ROOT, timeout: 10 * 60 * 1000 }
 );
 
@@ -394,7 +409,8 @@ console.log(`MP4:             ${outputPath} (${mp4Exists ? (mp4Bytes / 1024).toF
 if (existsSync(renderedFrameShot)) {
   console.log(`Rendered frame:  ${renderedFrameShot} (CT image present: ${frameHasImage ? 'YES' : 'NO'})`);
 }
-console.log(`\nServed at:       http://localhost:4173/generated/hyperframes/${accession}/renders/${accession}.mp4`);
+const servedBase = presentationStyle !== 'v1' ? `${accession}-${presentationStyle}` : accession;
+console.log(`\nServed at:       http://localhost:4173/generated/hyperframes/${servedBase}/renders/${accession}${styleSuffix}.mp4`);
 
 if (frameHasImage === false) {
   console.error('\nWARNING: rendered frame appears to be placeholder-only (no CT image detected).');

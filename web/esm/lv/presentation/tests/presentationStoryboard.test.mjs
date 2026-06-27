@@ -131,6 +131,29 @@ test('image scenes are completely static — no camera movement on the anatomy',
   assert.match(tl, /-hl"/);      // report reading-sweep
 });
 
+test('V2 style: all scene IDs present, no infinite repeats, numbered closing, smaller end card', () => {
+  const ctx = { source: 'demo', accession: 'NI9f7ff9', modality: 'CT',
+    positiveFindings: CT_POSITIVE, negativeFindings: CT_NEGATIVE };
+  const m = buildPresentationManifest(ctx, { evidenceMap: evidenceMapFor(CT_POSITIVE) });
+  const html = exportHtmlComposition(m, { assetMode: 'data-url', presentationStyle: 'v2' });
+
+  // All expected scene IDs present.
+  for (const id of ['sc-title', 'sc-summary', 'sc-find-0-a', 'sc-find-0-b', 'sc-find-1-b', 'sc-closing', 'sc-endcard']) {
+    assert.ok(html.includes(id), `V2 composition should contain ${id}`);
+  }
+  assert.ok(!/repeat:\s*-1/.test(html), 'V2: no infinite repeats allowed');
+
+  // V2 closing uses numbered items (no bullet dot with background:#5a9aff).
+  assert.ok(!html.includes('background:#5a9aff'), 'V2 closing must use numbered items, not V1 bullet dots');
+  // V2 end card is smaller (100px, not V1's 120px).
+  assert.match(html, /font-size:100px/, 'V2 end card wordmark is 100px');
+  assert.ok(!html.includes('font-size:120px'), 'V2 must not use V1 end-card 120px wordmark');
+  // V2 evidence images still static.
+  const tl = html.slice(html.indexOf('gsap.timeline'));
+  assert.ok(!/tl\.\w+\("#[^"]*-img"/.test(tl), 'V2: evidence image must not be animated');
+  assert.ok(!/tl\.\w+\("#[^"]*-stage"/.test(tl), 'V2: image stage must not be animated');
+});
+
 test('data-driven scene selection: non-localized findings get no image scene', () => {
   const NON_LOCALIZED = { id: 'chondromalacia-patella', label: 'Chondromalacia patella',
     description: 'Mild chondromalacia patella', anatomy: 'patella', disease: 'chondromalacia',
