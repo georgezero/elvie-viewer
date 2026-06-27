@@ -30,9 +30,9 @@
 const T = {
   title:        3.2,
   summary:      4.2,
-  findingText:  3.2,   // beat A — report sentence
+  findingText:  4.2,   // beat A — report sentence
   findingImage: 6.2,   // beat B — CT image + pointer + metadata
-  closing:      5.2,
+  closing:      6.2,
   xfade:        0.8,   // cross-dissolve overlap
   pause:        0.45,  // brief hold between scenes (room for future narration)
 };
@@ -40,7 +40,7 @@ const T = {
 // ELVIE wordmark — matched to the viewer (.lv-logo): Bebas Neue, cyan #00d4e8,
 // 0.12em tracking, ~20px. Persistent, ~45% opacity, upper-left, never animated.
 const BRAND = { text: 'Elvie', color: '#00d4e8', font: "'Bebas Neue', sans-serif",
-  size: 22, tracking: '0.12em', opacity: 0.45, margin: 32 };
+  size: 25, tracking: '0.12em', opacity: 0.45, margin: 32 };
 
 function esc(str) {
   return String(str == null ? '' : str)
@@ -156,7 +156,6 @@ export function buildTitleScene({ manifest, start, backdropUrl }) {
     ${backdrop}
     <div id="${id}-body" style="position:absolute;inset:0;display:flex;flex-direction:column;
       align-items:center;justify-content:center;opacity:0;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.3em;margin-bottom:26px;">Case Presentation</div>
       <div style="font-size:84px;font-weight:700;color:#eef3ff;letter-spacing:.01em;text-align:center;
         line-height:1.05;text-shadow:0 2px 40px rgba(0,0,0,.6);">${exam}</div>
       <div style="margin-top:26px;text-align:center;">${metaRows}</div>
@@ -251,9 +250,9 @@ export function buildFindingScene({ section, findingNumber, sceneIndex, start, r
   const card = `
     <div id="${idB}-card" style="position:absolute;left:64px;bottom:64px;opacity:0;
       background:rgba(7,10,20,.42);backdrop-filter:blur(10px);border:1px solid rgba(70,90,140,.22);
-      border-radius:10px;padding:16px 20px;max-width:440px;">
-      <div style="font-size:22px;font-weight:600;color:#eef3ff;line-height:1.2;margin-bottom:${section.navigable || winLabel ? '10' : '0'}px;">${title}</div>
-      ${metaLines.length ? `<div style="font-family:monospace;font-size:13px;color:#8fb0dd;letter-spacing:.02em;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+      border-radius:10px;padding:20px 26px;max-width:520px;">
+      <div style="font-size:28px;font-weight:600;color:#eef3ff;line-height:1.2;margin-bottom:${section.navigable || winLabel ? '10' : '0'}px;">${title}</div>
+      ${metaLines.length ? `<div style="font-family:monospace;font-size:15px;color:#8fb0dd;letter-spacing:.02em;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
       ${winLabel ? `<div style="font-size:12px;color:#46587e;margin-top:${metaLines.length ? '6' : '0'}px;">${winLabel}</div>` : ''}
     </div>`;
 
