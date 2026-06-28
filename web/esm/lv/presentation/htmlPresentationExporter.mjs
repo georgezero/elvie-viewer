@@ -125,14 +125,17 @@ function vignetteOrigin(section) {
 }
 
 // Wrap the first occurrence of `phrase` in `sentence` with a reading-sweep span.
-function highlightSentence(sentence, phrase, sweepId) {
+// `extraStyle` (optional) injects inline CSS on the span — used by V2 to enlarge
+// the highlighted phrase. Omitted by V1 callers so V1 output is byte-identical.
+function highlightSentence(sentence, phrase, sweepId, extraStyle = '') {
   const s = norm(sentence);
   const p = norm(phrase);
   if (!s) return '';
   if (!p) return esc(s);
   const i = s.toLowerCase().indexOf(p.toLowerCase());
   if (i < 0) return esc(s);
-  return `${esc(s.slice(0, i))}<span class="hl" id="${sweepId}">${esc(s.slice(i, i + p.length))}</span>${esc(s.slice(i + p.length))}`;
+  const styleAttr = extraStyle ? ` style="${extraStyle}"` : '';
+  return `${esc(s.slice(0, i))}<span class="hl" id="${sweepId}"${styleAttr}>${esc(s.slice(i, i + p.length))}</span>${esc(s.slice(i + p.length))}`;
 }
 
 // ── Persistent brand layer (outside clips; always visible) ───────────────────
@@ -473,7 +476,7 @@ export function buildTitleSceneV2({ manifest, start, backdropUrls = [] }) {
     date ? `Study date ${esc(date)}` : '',
     indication ? `Indication: ${esc(indication)}` : '',
   ].filter(Boolean).map(r =>
-    `<div style="font-size:32px;color:#4e6590;letter-spacing:.04em;margin-top:18px;">${r}</div>`
+    `<div style="font-size:34px;color:#9fb6d8;letter-spacing:.04em;margin-top:20px;">${r}</div>`
   ).join('');
 
   const inner = `
@@ -537,17 +540,15 @@ export function buildTitleSceneV2({ manifest, start, backdropUrls = [] }) {
 export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start, resolveOpts }) {
   const idA = `sc-find-${sceneIndex}-a`;
   const idB = `sc-find-${sceneIndex}-b`;
-  const sweepId = `${idA}-hl`;
   const sentence = norm(section.reportSentence) || norm(section.text);
-  const highlighted = highlightSentence(sentence, section.highlightPhrase, sweepId);
+  // The finding title comes straight from the finding object (same title the
+  // following finding slide uses) — never extracted from the report sentence.
   const title = esc(norm(section.title));
   const imgUrl = resolveEvidenceUrl(section, resolveOpts);
   const pointer = section.pointer;
   const orientation = esc(norm(section.orientation));
   const winLabel = esc(windowLabel(section));
   const vOrigin = vignetteOrigin(section);
-  const hasHighlight = !!(section.highlightPhrase && sentence.toLowerCase()
-    .includes(norm(section.highlightPhrase).toLowerCase()));
 
   const textDur = TV2.findingText + TV2.xfade;
   // Image starts earlier than V1 — more overlap so the transition feels like
@@ -580,25 +581,28 @@ export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start,
 
   const metaLines = [];
   if (section.navigable) {
-    metaLines.push(`<span style="color:#3c5070;">Series</span> ${esc(String(section.seriesNumber ?? ''))}`);
-    metaLines.push(`<span style="color:#3c5070;">Image</span> ${esc(String(section.imageNumber ?? ''))}`);
+    metaLines.push(`<span style="color:#6f88b4;">Series</span> ${esc(String(section.seriesNumber ?? ''))}`);
+    metaLines.push(`<span style="color:#6f88b4;">Image</span> ${esc(String(section.imageNumber ?? ''))}`);
   }
   const findingBodyText = norm(section.text);
   const patientText = norm(section.patientFriendlyExplanation);
+  // Patient text never truncates — scale down only past ~8 lines of TV-sized text.
+  const patientFontPx = patientText.length <= 200 ? 46
+    : patientText.length <= 320 ? 42 : 36;
 
-  // ── V2 left narrative panel — inverted hierarchy ──────────────────────────────
-  // Patient explanation is visually dominant (inside an elevated card, 38px).
-  // Clinical description is de-emphasized (30px, muted colour).
-  // Metadata is reduced (18px) — series/image are context, not headline.
-  // Title remains the anchor (52px bold).
+  // ── V2 left narrative panel — TV-readable hierarchy ───────────────────────────
+  // Optimized for an elderly viewer across a room: every element is large and
+  // high-contrast. The patient explanation is the primary reading element (in an
+  // elevated card, 42-48px, pure white). Patient text NEVER truncates — it wraps
+  // freely and the card grows; only very long text scales the font down slightly.
   const patientCard = patientText ? `
-    <div style="background:rgba(255,255,255,0.04);border-radius:10px;
-      padding:18px 24px;border:1px solid rgba(255,255,255,0.06);
-      flex-shrink:0;overflow:hidden;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.18em;
-        margin-bottom:10px;">For patients</div>
-      <div style="font-size:38px;color:#e0eeff;line-height:1.45;
-        display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;">${esc(patientText)}</div>
+    <div style="background:rgba(18,26,45,.85);border-radius:18px;
+      padding:34px;border:1px solid rgba(0,212,232,.28);
+      box-shadow:0 18px 50px rgba(0,0,0,.45);flex-shrink:0;">
+      <div style="font-size:31px;font-weight:700;color:#2bd4e8;text-transform:uppercase;
+        letter-spacing:.10em;margin-bottom:18px;">For patients</div>
+      <div style="font-size:${patientFontPx}px;font-weight:600;color:#ffffff;line-height:1.42;
+        overflow-wrap:break-word;">${esc(patientText)}</div>
     </div>` : '';
 
   const leftPanel = `
@@ -606,18 +610,17 @@ export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start,
       background:rgba(6,8,18,.65);backdrop-filter:blur(14px);
       border-right:1px solid rgba(70,90,140,.18);overflow:hidden;opacity:0;">
       <div style="position:absolute;inset:0;display:flex;flex-direction:column;
-        justify-content:center;padding:52px 48px 52px 60px;overflow:hidden;">
-        <div style="font-size:16px;color:#2e4268;text-transform:uppercase;
-          letter-spacing:.22em;margin-bottom:16px;flex-shrink:0;">Finding ${findingNumber}</div>
-        <div style="font-size:52px;font-weight:700;color:#eef3ff;line-height:1.18;
-          margin-bottom:18px;flex-shrink:0;">${title}</div>
-        ${metaLines.length ? `<div style="font-family:monospace;font-size:18px;color:#7a8ead;letter-spacing:.02em;
-          margin-bottom:${winLabel ? '8px' : '20px'};flex-shrink:0;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
-        ${winLabel ? `<div style="font-size:17px;color:#506080;margin-bottom:20px;flex-shrink:0;">${winLabel}</div>` : ''}
-        <div style="width:36px;height:1px;background:rgba(80,110,160,.4);margin-bottom:22px;flex-shrink:0;"></div>
-        ${findingBodyText ? `<div style="font-size:30px;color:#a8bed8;line-height:1.55;
-          margin-bottom:${patientText ? '20px' : '0'};flex-shrink:0;
-          display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;">${esc(findingBodyText)}</div>` : ''}
+        justify-content:center;padding:48px 46px 48px 58px;">
+        <div style="font-size:31px;color:#2bd4e8;font-weight:700;text-transform:uppercase;
+          letter-spacing:.10em;margin-bottom:18px;flex-shrink:0;">Finding ${findingNumber}</div>
+        <div style="font-size:60px;font-weight:800;color:#eef3ff;line-height:1.14;
+          margin-bottom:22px;flex-shrink:0;">${title}</div>
+        ${metaLines.length ? `<div style="font-family:monospace;font-size:27px;color:#b8c8e0;letter-spacing:.02em;
+          margin-bottom:${winLabel ? '10px' : '22px'};flex-shrink:0;">${metaLines.join('&nbsp;&nbsp;·&nbsp;&nbsp;')}</div>` : ''}
+        ${winLabel ? `<div style="font-size:25px;color:#9cb0d2;margin-bottom:22px;flex-shrink:0;">${winLabel}</div>` : ''}
+        <div style="width:48px;height:2px;background:rgba(0,212,232,.45);margin-bottom:24px;flex-shrink:0;"></div>
+        ${findingBodyText ? `<div style="font-size:36px;color:#c8d6ea;line-height:1.5;
+          margin-bottom:${patientText ? '24px' : '0'};flex-shrink:0;overflow-wrap:break-word;">${esc(findingBodyText)}</div>` : ''}
         ${patientCard}
       </div>
     </div>`;
@@ -638,21 +641,23 @@ export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start,
     ${rightStage}
     ${orientLabel}`);
 
+  // Beat A is a bridge: the full report sentence (context) sits above the finding
+  // title, which is the same headline the following finding slide carries. The
+  // sentence dims slightly once the title lands so attention hands off cleanly.
   const beatA = clip(idA, start, textDur, `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
-    <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 190px;">
-      <div style="font-size:13px;color:#3a5080;text-transform:uppercase;letter-spacing:.28em;margin-bottom:26px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
-      <div id="${idA}-line" style="font-size:50px;font-weight:600;color:#54607e;line-height:1.45;opacity:0;">${highlighted}</div>
+    <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 170px;">
+      <div style="font-size:31px;font-weight:700;color:#2bd4e8;text-transform:uppercase;letter-spacing:.12em;margin-bottom:30px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
+      <div id="${idA}-line" style="font-size:34px;font-weight:500;color:#c8d6ea;line-height:1.5;opacity:0;">${esc(sentence)}</div>
+      <div id="${idA}-title" style="font-size:68px;font-weight:800;color:#ffffff;line-height:1.08;text-transform:uppercase;letter-spacing:-.01em;margin-top:42px;opacity:0;">${title}</div>
     </div>`);
 
   const tl = [
     `tl.to("#${idA}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(start)});`,
     `tl.fromTo("#${idA}-line", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.2)});`,
+    `tl.fromTo("#${idA}-title", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 1.1)});`,
+    `tl.to("#${idA}-line", { opacity: 0.5, duration: 0.5, ease: "power1.out" }, ${f2(start + 1.1)});`,
   ];
-
-  if (hasHighlight) {
-    tl.push(`tl.fromTo("#${sweepId}", { backgroundPosition: "100% 0" }, { backgroundPosition: "0% 0", duration: 0.8, ease: "power1.inOut" }, ${f2(start + 0.7)});`);
-  }
 
   // Beat A lifts and fades; image cross-dissolves in with more overlap than V1.
   tl.push(`tl.to("#${idA}-wrap", { y: -50, scale: 0.93, opacity: 0, duration: ${f2(TV2.xfade + 0.2)}, ease: "power2.in" }, ${f2(imgStart - 0.1)});`);
@@ -692,17 +697,18 @@ export function buildClosingSceneV2({ impression, start }) {
   const dur = closingDur + TV2.xfade;
 
   // Numbered items: number stacked above text (conference summary aesthetic).
+  // TV-readable: bright cyan numbers, large high-weight text, generous spacing.
   const items_html = items.map((b, i) => `
-    <div id="${id}-b${i}" style="opacity:0;margin-bottom:52px;">
-      <div style="font-size:20px;font-weight:700;color:#2a4478;letter-spacing:.14em;
-        margin-bottom:8px;">${i + 1}</div>
-      <div style="font-size:56px;font-weight:600;color:#e8eefa;line-height:1.25;">${esc(norm(b))}</div>
+    <div id="${id}-b${i}" style="opacity:0;margin-bottom:60px;">
+      <div style="font-size:38px;font-weight:700;color:#2bd4e8;letter-spacing:.10em;
+        margin-bottom:12px;">${i + 1}</div>
+      <div style="font-size:60px;font-weight:700;color:#eef3ff;line-height:1.22;">${esc(norm(b))}</div>
     </div>`).join('');
 
   const inner = `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#070712 0%,#090916 100%);"></div>
     <div style="position:absolute;inset:0;display:flex;flex-direction:column;
-      justify-content:center;padding:0 180px;">
+      justify-content:center;padding:0 170px;">
       ${items_html}
     </div>`;
 
@@ -740,6 +746,30 @@ export function buildEndCardSceneV2({ start }) {
   return { html: clip(id, start, dur, inner), tl, duration: TV2.endCard + TV2.pause };
 }
 
+// V2 summary — same layout/timing as the shared summary scene but with a larger,
+// brighter "SUMMARY" label and higher-contrast body for TV readability. Kept
+// separate so the shared buildSummaryScene (V1) stays byte-identical.
+export function buildSummarySceneV2({ summary, start }) {
+  const id = 'sc-summary';
+  const dur = TV2.summary + TV2.xfade;
+  const text = esc(norm(summary) || 'Study summary unavailable.');
+  const inner = `
+    <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 180px;">
+      <div style="font-size:31px;font-weight:700;color:#2bd4e8;text-transform:uppercase;letter-spacing:.12em;margin-bottom:32px;">Summary</div>
+      <div id="${id}-text" style="font-size:50px;font-weight:600;color:#e6edfb;line-height:1.4;opacity:0;letter-spacing:-.005em;">${text}</div>
+      <div id="${id}-rule" style="height:2px;width:0;margin-top:44px;background:linear-gradient(90deg,#2bd4e8,transparent);"></div>
+    </div>`;
+  const tl = [
+    `tl.to("#${id}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(start)});`,
+    `tl.fromTo("#${id}-text", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 1.0, ease: "power2.out" }, ${f2(start + 0.3)});`,
+    `tl.to("#${id}-rule", { width: 360, duration: 1.2, ease: "power2.out" }, ${f2(start + 0.8)});`,
+    `tl.to("#${id}", { opacity: 0, duration: ${f2(TV2.xfade)} }, ${f2(start + TV2.summary)});`,
+    `tl.set("#${id}", { opacity: 0 }, ${f2(start + TV2.summary + TV2.xfade)});`,
+  ];
+  return { html: clip(id, start, dur, inner), tl, duration: TV2.summary + TV2.pause };
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -773,7 +803,7 @@ export function exportHtmlComposition(manifest, { projectDir, assetMode = 'data-
 
   if (presentationStyle === 'v2') {
     advance(buildTitleSceneV2({ manifest, start: cursor, backdropUrls }));
-    advance(buildSummaryScene({ summary: manifest.summary, start: cursor }));
+    advance(buildSummarySceneV2({ summary: manifest.summary, start: cursor }));
     imageSections.forEach(({ section, findingNumber }, sceneIndex) => {
       advance(buildFindingSceneV2({ section, findingNumber, sceneIndex, start: cursor, resolveOpts }));
     });
