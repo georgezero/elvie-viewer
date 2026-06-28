@@ -93,9 +93,9 @@ function transportNoteHtml(manifestUrl) {
     ${esc(msg)}</div>`;
 }
 
-// Style-aware MP4 playback row — shows one button per known style (V1, V2).
+// Style-aware MP4 playback row — shows one chip per known style (V1, V2).
 // videoStates: { v1: { status, videoUrl, canRender }, v2: { status, videoUrl, canRender } }
-// Backwards-compatible: if videoStates is missing but videoState is present, maps it to v1.
+// A missing style entry renders as a "not rendered" note for that style.
 function mp4ButtonsHtml(videoStates = {}) {
   function styleChip(style, state = {}) {
     const { status = 'none', videoUrl = null, canRender = false } = state;

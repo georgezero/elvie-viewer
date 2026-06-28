@@ -544,73 +544,79 @@ test.describe('fetchable manifest preview deck screenshots', () => {
 });
 
 test.describe('MP4 render status in preview deck', () => {
-  // CT Head has a pre-rendered MP4 when `npm run render:hyperframes:ct-head` has been run.
-  // When the MP4 exists (served at /generated/hyperframes/NI9f7ff9/renders/NI9f7ff9.mp4),
-  // the preview shows a watch link. When absent, it shows a status / run-command hint.
+  // The deck shows one chip per style (V1, V2). Each chip is always in exactly one
+  // of these states: watch link (rendered), create, rendering, retry (failed), or
+  // a "not rendered" note. Whether a watch link appears depends on whether the
+  // render output exists locally — both outcomes are valid here.
 
-  test('CT Head preview shows mp4-status or mp4-link element', async ({ page }) => {
+  // Matches any of the per-style chip states for a given style.
+  function styleChip(page, style) {
+    return page.locator(
+      `[data-testid="preview-mp4-${style}-link"],` +
+      `[data-testid="preview-create-${style}-btn"],` +
+      `[data-testid="preview-mp4-${style}-rendering"],` +
+      `[data-testid="preview-retry-${style}-btn"],` +
+      `[data-testid="preview-mp4-${style}-missing"]`
+    );
+  }
+
+  test('CT Head preview shows V1 and V2 playback controls', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, 'NI9f7ff9');
     await stubWindowOpen(page);
     await clickPresentWaitForPreview(page);
 
-    // Exactly one of mp4-status or mp4-link must be present
-    const statusEl = page.locator('[data-testid="preview-mp4-status"]');
-    const linkEl   = page.locator('[data-testid="preview-mp4-link"]');
-    const statusCount = await statusEl.count();
-    const linkCount   = await linkEl.count();
-    expect(statusCount + linkCount).toBeGreaterThanOrEqual(1);
-
-    if (linkCount > 0) {
-      // MP4 exists — the link (an <a> with the testid) points to the served file
-      const href = await linkEl.getAttribute('href');
-      expect(href).toMatch(/\/generated\/hyperframes\/NI9f7ff9\/renders\/NI9f7ff9\.mp4/);
-      await screenshot(page, 'ct-head-preview-with-mp4-link');
-    } else {
-      // MP4 not yet rendered — status hint must be visible
-      await expect(statusEl).toBeVisible();
-      await screenshot(page, 'ct-head-preview-with-mp4-status');
+    for (const style of ['v1', 'v2']) {
+      expect(await styleChip(page, style).count()).toBeGreaterThanOrEqual(1);
+      // If a watch link is shown, it must point at the served file for that style.
+      const link = page.locator(`[data-testid="preview-mp4-${style}-link"]`);
+      if (await link.count() > 0) {
+        const href = await link.getAttribute('href');
+        const expected = style === 'v1'
+          ? /\/generated\/hyperframes\/NI9f7ff9\/renders\/NI9f7ff9\.mp4/
+          : /\/generated\/hyperframes\/NI9f7ff9-v2\/renders\/NI9f7ff9-v2\.mp4/;
+        expect(href).toMatch(expected);
+      }
     }
+    await screenshot(page, 'ct-head-preview-mp4-controls');
   });
 
-  test('MR Knee preview shows mp4-status element (no pre-rendered MP4 by default)', async ({ page }) => {
+  test('MR Knee preview shows V1 and V2 playback controls', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, '3852755662087132');
     await stubWindowOpen(page);
     await clickPresentWaitForPreview(page);
 
-    // MR Knee render is not run by default test setup, so status should be shown.
-    // If it was run, a link is acceptable too — the test just verifies one exists.
-    const statusEl = page.locator('[data-testid="preview-mp4-status"]');
-    const linkEl   = page.locator('[data-testid="preview-mp4-link"]');
-    const count = await statusEl.count() + await linkEl.count();
-    expect(count).toBeGreaterThanOrEqual(1);
+    for (const style of ['v1', 'v2']) {
+      expect(await styleChip(page, style).count()).toBeGreaterThanOrEqual(1);
+    }
   });
 });
 
 test.describe('Generic MP4 button state machine', () => {
   // Drives openPresentationPreview directly with a synthetic manifest so the
-  // state machine can be validated without a DICOM server. No study-specific logic.
-  async function renderState(page, videoState, { withEvidence = true } = {}) {
-    return page.evaluate(async ({ videoState, withEvidence }) => {
+  // style-aware state machine can be validated without a DICOM server. The deck
+  // renders one chip per style (V1, V2); this test inspects the V1 chip.
+  async function renderState(page, v1State, { withEvidence = true } = {}) {
+    return page.evaluate(async ({ v1State, withEvidence }) => {
       const mod = await import('/esm/lv/presentation/presentationPreview.mjs');
       const manifest = {
         payloadVersion: 'presentation-manifest-v1', accession: 'X', presentationTitle: 'T', studyLabel: 'X',
         sections: [{ id: 'f1', title: 'Finding', text: 't', navigable: true, seriesNumber: 1, imageNumber: 1,
           imageEvidence: withEvidence ? [{ status: 'captured', dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' }] : [] }]
       };
-      mod.openPresentationPreview(manifest, { videoState, onCreateVideo: () => {}, onExport: () => {} });
+      mod.openPresentationPreview(manifest, { videoStates: { v1: v1State }, onCreateVideo: () => {}, onExport: () => {} });
       const has = (t) => !!document.querySelector(`[data-testid="${t}"]`);
       const out = {
-        create: has('preview-create-video-btn'),
-        rendering: has('preview-mp4-rendering'),
-        link: has('preview-mp4-link'),
-        retry: has('preview-retry-video-btn'),
-        status: has('preview-mp4-status'),
+        create: has('preview-create-v1-btn'),
+        rendering: has('preview-mp4-v1-rendering'),
+        link: has('preview-mp4-v1-link'),
+        retry: has('preview-retry-v1-btn'),
+        missing: has('preview-mp4-v1-missing'),
       };
       mod.closePresentationPreview();
       return out;
-    }, { videoState, withEvidence });
+    }, { v1State, withEvidence });
   }
 
   test('Create / Rendering / Watch / Retry / none states render the right control', async ({ page }) => {
@@ -621,8 +627,8 @@ test.describe('Generic MP4 button state machine', () => {
     expect(await renderState(page, { canRender: true, status: 'rendering' })).toMatchObject({ rendering: true });
     expect(await renderState(page, { canRender: true, status: 'complete', videoUrl: '/x.mp4?v=abc' })).toMatchObject({ link: true });
     expect(await renderState(page, { canRender: true, status: 'failed' })).toMatchObject({ retry: true });
-    // No capability → no Create button, just an explanatory status.
-    expect(await renderState(page, { canRender: false, status: 'none' })).toMatchObject({ create: false, status: true });
+    // No capability → no Create button, just an explanatory "not rendered" note.
+    expect(await renderState(page, { canRender: false, status: 'none' })).toMatchObject({ create: false, missing: true });
   });
 });
 

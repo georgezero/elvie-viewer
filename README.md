@@ -77,7 +77,8 @@ Clicking **PRESENT** on a loaded report:
 2. Builds a `presentation-manifest-v1` JSON object with sections, speaker notes, and evidence
 3. Publishes the manifest to a local URL via the service worker at `/lv-manifest-worker.js`
 4. Opens the **Preview Deck** — an Elvie-local slide view of the prepared manifest
-5. Offers two actions: **"Watch rendered MP4"** (if one has been built) and **"Export package ↓"**
+5. Offers style-aware playback (**Play V1 / Play V2**, or **Create V1/V2 (MP4)** when
+   not yet rendered) and **"Export package ↓"**
 
 There is **no external launch**. The deck becomes a video through the HyperFrames CLI
 (`npx hyperframes render`) — HyperFrames is an HTML-to-MP4 renderer, not a hosted deck
@@ -149,10 +150,35 @@ cd web && python3 -m http.server 4173 &
 # Generic build (export evidence, then render MP4) for any accession:
 npm run build:hyperframes -- --accession <accession>
 
+# Render the V2 style instead (see "Presentation styles" below):
+npm run build:hyperframes -- --accession <accession> --style v2
+
 # Convenience aliases for the demo studies:
 npm run build:hyperframes:ct-head     # --accession NI9f7ff9
 npm run build:hyperframes:mr-knee     # --accession 3852755662087132
 ```
+
+`--style` is passed through to the render step only; evidence capture is
+identical across styles, so the same captured images feed both V1 and V2.
+
+### Presentation styles (V1 / V2)
+
+Two interchangeable presentation styles render from the **same** manifest and the
+**same** captured evidence. The style only changes the scene typography, layout,
+and timing — never the image pixels, the report text, or the navigation behavior.
+
+| Style | Intent | Characteristics |
+|-------|--------|-----------------|
+| **V1** (default) | Original cinematic deck | Report-sentence reading-sweep, compact narrative panel, established timing. Byte-for-byte stable — V1 output is locked. |
+| **V2** | TV / across-the-room readability | Larger high-contrast typography for an elderly viewer; report beat bridges the full report sentence into the finding title; patient explanation is the dominant element in an elevated card and is **never truncated**. |
+
+- V1 is treated as **locked**: the V2 work is verified to leave V1 HTML output
+  byte-for-byte identical (checked by SHA-256 against the committed render path).
+- Each style renders to its own directory so one HyperFrames project has exactly
+  one `index.html` entry point: V1 → `…/<accession>/`, V2 → `…/<accession>-v2/`.
+- A `renders.json` style-index in the accession directory records per-style
+  `status`, `mp4Version`, and `servedMp4Path`; the Preview Deck's **Play V1 / Play
+  V2** buttons read it to find the right MP4.
 
 **Data-driven scene selection.** Each positive finding becomes an image scene
 only when it has captured image evidence. Findings without localization (no
@@ -205,14 +231,20 @@ then extracts a frame from the MP4 and verifies it contains the CT image (not th
 ### Output paths (per accession, `NI9f7ff9` = CT Head)
 
 ```
-web/generated/hyperframes/NI9f7ff9/
+web/generated/hyperframes/NI9f7ff9/          (V1 — the default style)
   presentation.json                 manifest with assets/finding-N.png references
   assets/finding-1.png, finding-2.png   captured CT evidence (PNG)
   index.html                        HyperFrames composition (PNGs embedded as data URLs)
   renders/NI9f7ff9.mp4              rendered video
   render.json                       render metadata + verification flags
+  renders.json                      style index (V1 + V2 status / version / served path)
   debug/render-input-slide-1.png    screenshot of the exact HTML passed to the renderer
   debug/rendered-frame-1.png        frame extracted from the MP4 (proves image is present)
+
+web/generated/hyperframes/NI9f7ff9-v2/        (V2 — sibling project, one index.html each)
+  index.html                        V2 HyperFrames composition
+  renders/NI9f7ff9-v2.mp4           rendered V2 video
+  render.json                       V2 render metadata
 ```
 
 `web/generated/` is gitignored — none of these are committed.
@@ -274,6 +306,18 @@ debug/rendered-frame-1.png          frame extracted from the MP4
 
 ### Limitations
 
+- **Rendering requires a local Node/CLI run.** `npx hyperframes render` runs on
+  the machine; there is no hosted/cloud render service. The MP4 is produced
+  locally and linked from the Preview Deck.
+- **In-browser "Create Video (MP4)" needs a pluggable backend.** The Preview Deck
+  button calls an optional hook (`window.elvieCreateVideo`). With no backend wired
+  it only surfaces the generic build command — it does not render in the browser.
+- **Pointer localization is demo/manual** unless a finding carries
+  `finding.localization`. Without it, pointers fall back to hand-placed
+  `DEMO_POINTERS`; real AI localization drops in unchanged when available.
+- **No TTS yet.** Every scene carries a plain-text `narration` segment in
+  `manifest.narrationScript`, but the renderer does not synthesize audio. A later
+  pass can feed these to browser TTS, OpenAI, ElevenLabs, Cartesia, etc.
 - Real evidence requires the **browser/DICOM viewer path**. Running the render
   script alone (without a prior export) falls back to a registry-only manifest
   with placeholder panels instead of CT images.
