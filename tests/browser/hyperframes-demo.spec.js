@@ -421,8 +421,8 @@ test.describe('CT Head presentation preview', () => {
     await page.locator('[data-testid="preview-prev-btn"]').click();
     await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
 
-    // Export action present; no external launch button.
-    await expect(page.locator('[data-testid="preview-export-btn"]')).toBeVisible();
+    // Developer-only controls removed: no export package button, no external launch.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
   });
 });
@@ -467,8 +467,8 @@ test.describe('MR Knee presentation preview', () => {
 
     await screenshot(page, 'mr-knee-preview-text-only-slide');
 
-    // Export action present; no external launch button.
-    await expect(page.locator('[data-testid="preview-export-btn"]')).toBeVisible();
+    // Developer-only controls removed: no export package button, no external launch.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
   });
 });
@@ -479,7 +479,7 @@ test.describe('MR Knee presentation preview', () => {
 // distinct from the generic slide screenshots captured by earlier tests.
 
 test.describe('fetchable manifest preview deck screenshots', () => {
-  test('CT Head: Preview Deck label, slide nav, Export package button, manifest URL', async ({ page }) => {
+  test('CT Head: Preview label, slide nav, Play buttons, manifest URL', async ({ page }) => {
     await loadPage(page);
     await loadDemoReport(page, 'NI9f7ff9');
     await clickPresentWaitForPreview(page);
@@ -489,10 +489,9 @@ test.describe('fetchable manifest preview deck screenshots', () => {
     await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('caudate', { ignoreCase: true });
     await screenshot(page, 'fetchable-preview-deck-ct-head-slide-1');
 
-    // Export package button: screenshot the slide panel so the footer buttons are visible
-    await page.locator('[data-testid="preview-export-btn"]').scrollIntoViewIfNeeded();
+    // Play V1 / V2 are the primary actions: screenshot the slide footer.
     await page.locator('[data-testid="preview-slide"]').screenshot({
-      path: path.join(SHOT_DIR, 'fetchable-preview-deck-export-package-button.png')
+      path: path.join(SHOT_DIR, 'fetchable-preview-deck-play-buttons.png')
     });
 
     // Slide 2 — vertex fracture

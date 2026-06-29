@@ -1,17 +1,16 @@
-// Local presentation preview overlay — "Preview Deck".
+// Local presentation preview overlay — "Preview".
 //
-// Renders a deck-style view from a PresentationManifest. The deck is turned into
-// a video by the HyperFrames CLI (npx hyperframes render) — there is NO hosted
-// HyperFrames deck app, so this overlay does not offer an external launch.
-// The actions are: watch the rendered MP4, or export the package for rendering.
+// Renders a deck-style view from a PresentationManifest. Each section becomes one
+// slide; the primary actions are Play V1 / Play V2 (the rendered MP4s). Negative
+// findings are excluded by the manifest builder.
 //
-// Each section in manifest.sections becomes one slide. Negative findings are
-// excluded by the manifest builder.
+// The package-export path still exists internally (onExport → downloadManifest)
+// but is no longer surfaced as a button in this production UI.
 //
 // Options accepted by openPresentationPreview:
-//   onExport()    — called when user clicks "Export package"
-//   manifestUrl   — used to compute and display the transport status note
-//   videoUrl      — when set, shows a prominent "Watch rendered MP4" link
+//   onExport()      — programmatic package export (retained; no UI control)
+//   onCreateVideo() — called with a style ('v1'|'v2') to render/retry an MP4
+//   videoStates     — per-style playback state used to render the Play buttons
 //
 // DOM: fixed overlay on document.body. Keyboard: Escape closes; ← → navigate.
 
@@ -60,39 +59,6 @@ function navBtn(testid, label, disabled) {
     ${disabled ? 'disabled' : ''}>${esc(label)}</button>`;
 }
 
-// Integration note — always shown. Describes the real, CLI-only flow.
-// HyperFrames is an HTML-to-video renderer (npx hyperframes render); there is
-// no hosted deck app and no manifest= URL handoff.
-const INTEGRATION_STATUS_NOTE =
-  'This deck renders to MP4 via the HyperFrames CLI ' +
-  '(npx hyperframes render). HyperFrames is an HTML-to-video tool — there is ' +
-  'no hosted deck app. Export the package, then build the MP4 locally.';
-
-function integrationStatusHtml() {
-  return `<div data-testid="preview-integration-status"
-    style="font-size:11px;color:#5b6b8c;background:#0d1320;border:1px solid #1a2740;
-           border-radius:4px;padding:7px 10px;margin-top:10px;line-height:1.55;">
-    ${esc(INTEGRATION_STATUS_NOTE)}
-  </div>`;
-}
-
-function transportNoteHtml(manifestUrl) {
-  if (!manifestUrl) return '';
-  let msg;
-  if (/^blob:/.test(manifestUrl)) {
-    msg = 'Manifest: session-scoped blob URL — not fetchable cross-origin.';
-  } else if (/^https?:\/\/(localhost|127\.0\.0\.1)/.test(manifestUrl)) {
-    msg = 'Manifest: hosted at localhost via service worker (not reachable from the public internet).';
-  } else if (/^https:/.test(manifestUrl)) {
-    msg = 'Manifest: published at a publicly fetchable HTTPS URL.';
-  } else {
-    return '';
-  }
-  return `<div data-testid="preview-transport-note"
-    style="font-size:11px;color:#4a4a62;margin-top:6px;line-height:1.5;">
-    ${esc(msg)}</div>`;
-}
-
 // Style-aware MP4 playback row — shows one chip per known style (V1, V2).
 // videoStates: { v1: { status, videoUrl, canRender }, v2: { status, videoUrl, canRender } }
 // A missing style entry renders as a "not rendered" note for that style.
@@ -132,12 +98,12 @@ function mp4ButtonsHtml(videoStates = {}) {
   }
 
   const chips = [styleChip('v1', videoStates.v1), styleChip('v2', videoStates.v2)].join('\n');
-  return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+  return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
     ${chips}
   </div>`;
 }
 
-function slideHtml(manifest, section, idx, total, { manifestUrl, videoStates, hasExport }) {
+function slideHtml(manifest, section, idx, total, { videoStates }) {
   const loc = section.navigable
     ? `<div data-testid="preview-location"
         style="font-size:12px;color:#7ab8f5;margin-bottom:10px;">
@@ -153,17 +119,9 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, videoStates, ha
         style="font-size:12px;color:#555;border-top:1px solid #1e1e32;
                padding-top:10px;margin-bottom:14px;line-height:1.6;">
         <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;
-                    color:#444;margin-bottom:3px;">Speaker notes</div>
+                    color:#444;margin-bottom:3px;">Finding ${idx + 1} of ${total}</div>
         ${esc(norm(section.speakerNotes))}
        </div>`
-    : '';
-
-  const exportBtn = hasExport
-    ? `<button data-testid="preview-export-btn"
-        style="background:#1a1a30;border:1px solid #3a3a54;color:#aab;
-               border-radius:4px;padding:6px 14px;cursor:pointer;font-size:13px;">
-        Export package &#8595;
-       </button>`
     : '';
 
   return `
@@ -174,7 +132,7 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, videoStates, ha
 
   <!-- deck identity bar -->
   <div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;
-              color:#333;margin-bottom:10px;">Preview Deck</div>
+              color:#333;margin-bottom:10px;">Preview</div>
 
   <div style="display:flex;justify-content:space-between;align-items:flex-start;
               margin-bottom:16px;gap:12px;">
@@ -212,33 +170,24 @@ function slideHtml(manifest, section, idx, total, { manifestUrl, videoStates, ha
   ${notes}
 
   <div style="display:flex;justify-content:space-between;align-items:center;
-              gap:8px;flex-wrap:wrap;border-top:1px solid #1a1a30;padding-top:14px;">
-    <div style="display:flex;gap:8px;">
+              gap:14px;flex-wrap:wrap;border-top:1px solid #1a1a30;padding-top:16px;">
+    <div style="display:flex;gap:8px;flex-shrink:0;">
       ${navBtn('preview-prev-btn', '← Prev', idx === 0)}
       ${navBtn('preview-next-btn', 'Next →', idx === total - 1)}
     </div>
-    ${exportBtn}
+    ${mp4ButtonsHtml(videoStates)}
   </div>
-  ${mp4ButtonsHtml(videoStates)}
-  ${integrationStatusHtml()}
-  ${transportNoteHtml(manifestUrl)}
 </div>`;
 }
 
-function emptyHtml(manifest, { manifestUrl, videoStates, hasExport }) {
-  const exportBtn = hasExport
-    ? `<button data-testid="preview-export-btn"
-        style="background:#1a1a30;border:1px solid #3a3a54;color:#aab;
-               border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">
-        Export package &#8595;</button>`
-    : '';
+function emptyHtml(manifest) {
   return `
 <div data-testid="preview-slide" data-slide-index="0"
   style="background:#111126;color:#dde;border-radius:10px;
          width:min(580px,93vw);padding:40px 36px;
          box-shadow:0 12px 48px rgba(0,0,0,0.7);text-align:center;">
   <div style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;
-              color:#333;margin-bottom:16px;">Preview Deck</div>
+              color:#333;margin-bottom:16px;">Preview</div>
   <div data-testid="preview-title"
     style="font-size:14px;color:#7aade8;margin-bottom:18px;">
     ${esc(norm(manifest?.presentationTitle))}</div>
@@ -250,27 +199,21 @@ function emptyHtml(manifest, { manifestUrl, videoStates, hasExport }) {
       style="background:#1a1a30;border:1px solid #3a3a54;color:#888;
              border-radius:4px;padding:7px 18px;cursor:pointer;font-size:13px;">
       Close</button>
-    ${exportBtn}
   </div>
-  ${mp4ButtonsHtml(videoStates)}
-  ${integrationStatusHtml()}
-  ${transportNoteHtml(manifestUrl)}
 </div>`;
 }
 
 /**
- * Open the local presentation preview overlay ("Preview Deck").
+ * Open the local presentation preview overlay ("Preview").
  *
- * This is an Elvie-local view. The deck is rendered to MP4 by the HyperFrames
- * CLI; there is no external launch.
+ * This is an Elvie-local view. Primary actions are Play V1 / Play V2.
  *
  * @param {object} manifest - PresentationManifest from buildPresentationManifest
  * @param {object} [options]
- * @param {function} [options.onExport]      - called when "Export package" is clicked
- * @param {function} [options.onCreateVideo] - called when "Create Video (MP4)" / "Retry" is clicked
- * @param {string}   [options.manifestUrl]   - published manifest URL for transport status note
+ * @param {function} [options.onExport]      - programmatic package export (retained; no UI control)
+ * @param {function} [options.onCreateVideo] - called with style string ('v1'|'v2') when render/retry requested
+ * @param {string}   [options.manifestUrl]   - published manifest URL (accepted; not displayed)
  * @param {object}   [options.videoStates]   - { v1: { status, videoUrl, canRender }, v2: {...} }
- * @param {function} [options.onCreateVideo] - called with style string ('v1'|'v2') when render requested
  */
 export function openPresentationPreview(manifest, { onExport, onCreateVideo, manifestUrl, videoStates } = {}) {
   closePresentationPreview();
@@ -285,12 +228,12 @@ export function openPresentationPreview(manifest, { onExport, onCreateVideo, man
     'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.83);' +
     'display:flex;align-items:center;justify-content:center;';
 
-  const ctx = { manifestUrl, videoStates: videoStates || {}, hasExport: !!onExport };
+  const ctx = { videoStates: videoStates || {} };
 
   function mount() {
     overlay.innerHTML = sections.length
       ? slideHtml(manifest, sections[current], current, sections.length, ctx)
-      : emptyHtml(manifest, ctx);
+      : emptyHtml(manifest);
 
     overlay.querySelector('[data-testid="preview-close-btn"]')
       ?.addEventListener('click', closePresentationPreview);

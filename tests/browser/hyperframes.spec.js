@@ -147,7 +147,7 @@ test.describe('Hyperframes PRESENT integration', () => {
     await expect(paste).toBeVisible();
     await expect(upload).toBeVisible();
 
-    await expect(present).toHaveText('PRESENT');
+    await expect(present).toHaveText('Video Report');
 
     const hdr = page.locator('.report-panel-hdr');
     await expect(hdr).toBeVisible();
@@ -188,7 +188,7 @@ test.describe('Hyperframes PRESENT integration', () => {
     await screenshot(page, '02-guardrail-no-report');
   });
 
-  test('T3 — with navigable findings, PRESENT shows preview with export action, no external launch', async ({ page }) => {
+  test('T3 — with navigable findings, PRESENT shows preview, no export/launch controls', async ({ page }) => {
     await loadPage(page);
 
     await page.evaluate((ctx) => { window.setActiveReportContext(ctx); }, NAV_CONTEXT);
@@ -203,8 +203,10 @@ test.describe('Hyperframes PRESENT integration', () => {
     await expect(page.locator('[data-testid="preview-finding-title"]')).toHaveText('Medial meniscus tear');
     await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 1');
 
-    // Export action is present; the external launch button no longer exists.
-    await expect(page.locator('[data-testid="preview-export-btn"]')).toBeVisible();
+    // Developer-only controls are gone: no export package button, no external launch.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="preview-integration-status"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="preview-transport-note"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
 
     // No error banner
