@@ -1,3 +1,8 @@
 *.swp
 *.swo
 .DS_Store
+node_modules/
+test-artifacts/
+package-lock.json
+web/generated/
+PLAN/

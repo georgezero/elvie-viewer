@@ -139,6 +139,9 @@ const BUILTIN_REPORTS = [
     accession: 'NI9f7ff9',
     modality: 'CT',
     title: 'CT Head',
+    examName: 'CT Head Without Contrast',
+    studyDate: '2013-06-28',
+    clinicalIndication: 'Altered mental status',
     reportText:
       'Chronic infarct involving left caudate head (Series 2, Image 21). Healed fracture near left vertex (Series 2, Image 36). No acute intracranial hemorrhage.',
     findings: [

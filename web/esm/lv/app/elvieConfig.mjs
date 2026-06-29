@@ -4,6 +4,7 @@ export const ELVIE_CONFIG_VERSION = 'elvie-config-v1';
 
 export const DICOMWEB_PRESETS = [
   { label: 'Elvie Server (localhost)',    url: 'http://localhost:8042/dicom-web' },
+  { label: 'Elvie Server (ggg.ad)',       url: 'https://elvie-server.ggg.ad/dicom-web' },
   { label: 'Legacy proxy (/orthanc/...)', url: '/orthanc/dicom-web' },
 ];
 

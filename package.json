@@ -1,0 +1,19 @@
+{
+  "name": "elvie-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:unit": "node --test 'web/esm/**/*.test.mjs'",
+    "test:browser": "npx playwright test",
+    "test": "npm run test:unit && npm run test:browser",
+    "export:hyperframes": "node scripts/export-hyperframes-evidence.mjs",
+    "render:hyperframes": "node scripts/render-hyperframes-video.mjs",
+    "build:hyperframes": "node scripts/build-hyperframes.mjs",
+    "build:hyperframes:ct-head": "node scripts/build-hyperframes.mjs --accession NI9f7ff9",
+    "build:hyperframes:mr-knee": "node scripts/build-hyperframes.mjs --accession 3852755662087132"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "hyperframes": "^0.7.12"
+  }
+}

@@ -3538,6 +3538,7 @@
         </select>
         <button class="btn btn-ghost rp-paste-btn" id="rpPasteBtn" onclick="toggleRpPasteForm()" title="Paste and parse a report" style="font-size:10px;padding:3px 8px;">PASTE</button>
         <button class="btn btn-ghost rp-upload-btn" id="rpUploadBtn" onclick="toggleRpUploadForm()" title="Upload and preprocess report file" style="font-size:10px;padding:3px 8px;">UPLOAD</button>
+        <button class="btn btn-ghost rp-present-btn" id="rpPresentBtn" onclick="launchHyperframesPresentation()" title="Generate Video Report" style="font-size:10px;padding:3px 8px;">Video</button>
       </div>
       <div class="report-panel-meta" id="rpMeta" style="display:none;">
         <div class="report-panel-meta-inner" id="rpMetaInner"></div>
@@ -9384,7 +9385,10 @@ function loadConfig() {
   state.viewerBaseUrl = viewer || '';
   state.caseApiBaseUrl = (localStorage.getItem('lv_elvie_case_api_url') || '').replace(/\/$/, '');
   state.enableUrlCaseLaunch = localStorage.getItem('lv_elvie_url_case_launch') !== '0';
-  state.dicomWebBaseUrl = (dicomWeb != null ? dicomWeb : '/orthanc/dicom-web').replace(/\/$/, '');
+  const _dicomWebFallback = window.location.hostname === 'elvie-hyper.viby.ad'
+    ? 'https://elvie-server.ggg.ad/dicom-web'
+    : '/orthanc/dicom-web';
+  state.dicomWebBaseUrl = (dicomWeb != null ? dicomWeb : _dicomWebFallback).replace(/\/$/, '');
   state.parserModel = parserModel || '';
   state.ocrEnabled = ocrEnabled === '1';
   state.ocrBaseUrl = ocrUrl || '';
@@ -12268,6 +12272,54 @@ function nativeCornerstoneGetVoiRange(viewport) {
   const range = props?.voiRange;
   if (range && Number.isFinite(range.lower) && Number.isFinite(range.upper)) return { lower: range.lower, upper: range.upper };
   return { lower: -1000, upper: 1000 };
+}
+
+// Read the active native viewport's window/level + camera state for evidence
+// metadata. Returns null when the native viewer is not active. Window center/
+// width are derived from the live VOI range; zoom/pan are best-effort from the
+// Cornerstone camera (translation when present, otherwise focal point).
+function readActiveNativeViewportState() {
+  const csState = state.nativeViewer?.cornerstone;
+  const viewports = csState?.viewports || [];
+  if (!viewports.length) return null;
+  const idx = Math.max(0, Number(state.nativeViewer?.activePaneIndex || 0));
+  const entry = viewports[idx] || viewports[0];
+  const viewport = entry?.viewport;
+  if (!viewport) return null;
+
+  const out = {
+    viewportId: entry.viewportId ?? null,
+    seriesNumber: Number.isFinite(Number(entry?.pane?.seriesNumber)) ? Number(entry.pane.seriesNumber) : null,
+    imageNumber: Number.isFinite(Number(entry?.pane?.imageNumber)) ? Number(entry.pane.imageNumber) : null
+  };
+
+  try {
+    const range = nativeCornerstoneGetVoiRange(viewport);
+    if (range && Number.isFinite(range.lower) && Number.isFinite(range.upper)) {
+      out.voiRange = { lower: Number(range.lower), upper: Number(range.upper) };
+      out.windowWidth = Math.round(range.upper - range.lower);
+      out.windowCenter = Math.round((range.upper + range.lower) / 2);
+    }
+  } catch { /* ignore */ }
+
+  try {
+    const cam = typeof viewport.getCamera === 'function' ? viewport.getCamera() : null;
+    if (cam) {
+      if (Number.isFinite(Number(cam.parallelScale))) out.zoom = Number(cam.parallelScale);
+      if (cam.translation && Number.isFinite(Number(cam.translation.x))) {
+        out.pan = { x: Number(cam.translation.x), y: Number(cam.translation.y) };
+      } else if (Array.isArray(cam.focalPoint)) {
+        out.pan = { focalPoint: cam.focalPoint.map((v) => Number(v)) };
+      }
+    }
+  } catch { /* ignore */ }
+
+  try {
+    const canvas = typeof viewport.getCanvas === 'function' ? viewport.getCanvas() : null;
+    if (canvas) { out.canvasWidth = canvas.width || null; out.canvasHeight = canvas.height || null; }
+  } catch { /* ignore */ }
+
+  return out;
 }
 
 function nativeCornerstoneWindowViewport(viewport, startRange, dx, dy) {
@@ -16650,8 +16702,195 @@ async function _autoLoadNativeViewer(accession) {
 }
 
 window.openAgentxReport = openAgentxReport;
+
+// ── Style-aware MP4 video state ───────────────────────────────────────────────
+// Resolves render status for both V1 and V2 from renders.json (style index).
+// Falls back to probing individual render.json + HEAD check when no index exists.
+async function resolveOneVideoState(dir, mp4Base, canRender) {
+  const state = { canRender: !!canRender, status: 'none', videoUrl: null };
+  let meta = null;
+  try {
+    const r = await fetch(`${dir}/render.json`, { cache: 'no-store' });
+    if (r.ok) meta = await r.json();
+  } catch (_) {}
+  if (meta?.status === 'rendering') { state.status = 'rendering'; return state; }
+  let mp4Ok = false;
+  try { mp4Ok = (await fetch(mp4Base, { method: 'HEAD' })).ok; } catch (_) {}
+  if (mp4Ok) {
+    state.status = 'complete';
+    state.videoUrl = meta?.mp4Version ? `${mp4Base}?v=${encodeURIComponent(meta.mp4Version)}` : mp4Base;
+    return state;
+  }
+  if (meta?.status === 'failed') { state.status = 'failed'; return state; }
+  return state;
+}
+
+async function resolveVideoStates(accession, canRender) {
+  if (!accession) return { v1: { canRender: false, status: 'none' }, v2: { canRender: false, status: 'none' } };
+  const enc = encodeURIComponent(accession);
+
+  // Try renders.json (style index written by the render script after each style run).
+  // If present, use it for both styles to avoid double HEAD probes.
+  try {
+    const r = await fetch(`/generated/hyperframes/${enc}/renders.json`, { cache: 'no-store' });
+    if (r.ok) {
+      const index = await r.json();
+      const fromEntry = (entry = {}) => {
+        const { status = 'none', mp4Version, servedMp4Path } = entry;
+        if (status === 'complete' && servedMp4Path) {
+          return { canRender: !!canRender, status: 'complete',
+            videoUrl: mp4Version ? `${servedMp4Path}?v=${encodeURIComponent(mp4Version)}` : servedMp4Path };
+        }
+        return { canRender: !!canRender, status: status === 'failed' ? 'failed' : 'none', videoUrl: null };
+      };
+      return {
+        v1: fromEntry(index.styles?.v1),
+        v2: fromEntry(index.styles?.v2),
+      };
+    }
+  } catch (_) {}
+
+  // Fallback: probe individually.
+  const [v1, v2] = await Promise.all([
+    resolveOneVideoState(
+      `/generated/hyperframes/${enc}`,
+      `/generated/hyperframes/${enc}/renders/${enc}.mp4`,
+      canRender
+    ),
+    resolveOneVideoState(
+      `/generated/hyperframes/${enc}-v2`,
+      `/generated/hyperframes/${enc}-v2/renders/${enc}-v2.mp4`,
+      canRender
+    ),
+  ]);
+  return { v1, v2 };
+}
+
+// Trigger an MP4 render for a given style ('v1' or 'v2').
+// Uses a pluggable backend hook (window.elvieCreateVideo(accession, style)) when
+// present; otherwise surfaces the CLI command to copy.
+async function requestVideoRender(accession, style = 'v1') {
+  if (!accession) return;
+  if (typeof window.elvieCreateVideo === 'function') {
+    try {
+      await window.elvieCreateVideo(accession, style);
+      showRpError(`Rendering ${style.toUpperCase()} video… re-open PRESENT to check status.`);
+    } catch (e) {
+      showRpError('Video render failed to start: ' + (e?.message || e));
+    }
+    return;
+  }
+  const stylePart = style !== 'v1' ? ` --style ${style}` : '';
+  const cmd = `node scripts/render-hyperframes-video.mjs --accession ${accession}${stylePart}`;
+  try { await navigator.clipboard?.writeText(cmd); } catch (_) {}
+  showRpError(`No render backend configured. Command copied to clipboard: ${cmd}`);
+}
+
+// ── Hyperframes presentation launch ───────────────────────────────────────────
+// Thin glue: read the active report context, delegate manifest building + launch
+// to the isolated presentation adapter, and surface guardrail messages in the
+// report panel. No manifest logic lives here.
+async function launchHyperframesPresentation(opts = {}) {
+  const context = (typeof getActiveReportContext === 'function') ? getActiveReportContext() : null;
+  const debug = !!(opts.debug ?? window.__elvieHyperDebug);
+
+  const btn = document.getElementById('rpPresentBtn');
+  const prevBtnText = btn?.textContent ?? 'Video';
+  if (btn) btn.textContent = 'Preparing...';
+
+  try {
+    const [launcherMod, evidenceMod, previewMod, publisherMod] = await Promise.all([
+      import('/esm/lv/presentation/hyperframesLauncher.mjs'),
+      import('/esm/lv/presentation/evidenceCollector.mjs'),
+      import('/esm/lv/presentation/presentationPreview.mjs'),
+      import('/esm/lv/presentation/manifestPublisher.mjs')
+    ]);
+
+    const positiveFindings = Array.isArray(context?.positiveFindings) ? context.positiveFindings : [];
+    const evidenceMap = await evidenceMod.collectPresentationEvidence(positiveFindings, {
+      settleMs: window.__ELVIE_EVIDENCE_SETTLE_MS__ ?? 600,
+      // Derive the window/level the SAME way elvie-viewer does for a finding click:
+      // classifyCtWindowPresetForFinding (the classifier maybeApplyAutoCtWindowingForFinding
+      // uses) reads the finding text + series description. e.g. "infarct" → brain_stroke,
+      // "fracture" → bone. We do not trust the seeded windowPreset hint; the viewer's
+      // deterministic classifier is the source of truth, so the capture matches the
+      // on-screen viewer for any finding, not just the seeded demo ones.
+      applyViewerWindowing: async (finding) => {
+        try {
+          const sn = Number(finding?.seriesNumber ?? finding?.series_number);
+          const seriesEntry = (state.seriesCatalog || []).find((s) => Number(s?.series_number) === sn);
+          if (!seriesEntry || !isCtSeriesEntry(seriesEntry)) return null;
+          const c = classifyCtWindowPresetForFinding(finding, seriesEntry);
+          // Mirror maybeApplyAutoCtWindowingForFinding's threshold: only override when
+          // the classifier is confident (score >= 2). Otherwise leave the viewer default.
+          if (!c || c.score < 2) return null;
+          await applyWindowPresetLocal(c.preset, { silent: true, logTag: 'evidence_capture_auto' });
+          return c.preset;
+        } catch { return null; }
+      },
+      // Read the live VOI/camera state into the evidence metadata (audit/debug).
+      readViewportState: () => readActiveNativeViewportState()
+    });
+
+    // Build manifest + publish to a fetchable URL. The SW publisher is used when the
+    // service worker is active (registered on page load). Falls back to blob: otherwise.
+    // The user triggers the external launch from inside the preview deck.
+    const res = launcherMod.launchHyperframesPresentation({
+      context,
+      source: context?.source || undefined,
+      debug,
+      includeTrace: debug && !!(opts.includeTrace ?? window.__elvieHyperIncludeTrace),
+      evidenceMap,
+      publishManifest: (manifest) => publisherMod.publishManifest(manifest),
+      openWindow: () => null
+    });
+    if (!res.ok) {
+      showRpError(res.message || 'Could not launch presentation.');
+      return res;
+    }
+    hideRpError();
+
+    // Test hooks: expose the last generated manifest and its published URL for
+    // browser test inspection. Never active unless window.__ELVIE_TEST__ is set.
+    if (window.__ELVIE_TEST__ && res?.manifest) {
+      window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ = res.manifest;
+      window.__ELVIE_TEST_LAST_MANIFEST_URL__ = res.manifestUrl || null;
+    }
+
+    // Style-aware MP4 state — resolves V1 and V2 render status from renders.json.
+    // canRender = the manifest has at least one captured image evidence.
+    const accession = context?.accession;
+    const canRender = Array.isArray(res.manifest?.sections) && res.manifest.sections.some(s =>
+      Array.isArray(s.imageEvidence) && s.imageEvidence.some(e => e?.status === 'captured' && (e.dataUrl || e.assetPath))
+    );
+    const videoStates = await resolveVideoStates(accession, canRender);
+
+    // Show the local preview deck ("Preview Deck"). "Create V1/V2 (MP4)" calls
+    // requestVideoRender with the style argument so the correct command is shown.
+    previewMod.openPresentationPreview(res.manifest, {
+      manifestUrl: res.manifestUrl,
+      videoStates,
+      onExport: () => publisherMod.downloadManifest(res.manifest),
+      onCreateVideo: (style) => requestVideoRender(accession, style)
+    });
+
+    return res;
+  } catch (e) {
+    showRpError('Presentation module failed to load: ' + (e?.message || e));
+    return { ok: false, reason: 'module_load_failed', message: String(e?.message || e) };
+  } finally {
+    if (btn) btn.textContent = prevBtnText;
+  }
+}
+window.launchHyperframesPresentation = launchHyperframesPresentation;
+
 // Expose queue token for tests (read-only getter so tests see live value)
 Object.defineProperty(window, '_rpAudioQueueToken', { get: () => _rpAudioQueueToken });
+
+// Register the manifest service worker early so it is active before the user
+// clicks PRESENT. The SW serves /lv-manifest/{id}.json from memory with CORS,
+// replacing the session-scoped blob: URL fallback used before SW activation.
+import('/esm/lv/presentation/manifestPublisher.mjs').then(m => m.registerManifestWorker()).catch(() => {});
 
 void Promise.all([
   import('/esm/lv/sync/pointSync.mjs'),

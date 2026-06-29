@@ -1,0 +1,896 @@
+// Browser tests: Hyperframes presentation manifests from the three built-in demo reports.
+//
+// Exercises the real openAgentxReport() loading path (not injected mock state).
+// window.open is stubbed so no request reaches hyperframes.heygen.com.
+// The generated manifest is captured via window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__
+// (set by the test hook in launchHyperframesPresentation when window.__ELVIE_TEST__ is truthy).
+//
+// Screenshot output: test-artifacts/hyperframes/
+//
+// Demo report → manifest mapping:
+//
+//   CXR-88997  (CXR)       — 0 navigable findings; non-navigable deck mode
+//   NI9f7ff9   (CT Head)   — 2 navigable findings (Series 2 Image 21, Series 2 Image 36)
+//   3852755662087132 (MR Knee) — 2 navigable findings + 1 non-navigable positive
+//
+// Manifest transport: the service worker at /lv-manifest-worker.js intercepts
+// GET /lv-manifest/{id}.json and serves the manifest from memory with CORS.
+// This produces a fetchable localhost URL, not a session-scoped blob: URL.
+// Remote servers (hyperframes.heygen.com) still cannot reach localhost URLs;
+// a cloud-storage publish step is needed for that handoff.
+
+import { test, expect } from '@playwright/test';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SHOT_DIR = path.join(__dirname, '../../test-artifacts/hyperframes');
+fs.mkdirSync(SHOT_DIR, { recursive: true });
+
+const PAGE_URL = '/index.html';
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function loadPage(page) {
+  await page.goto(PAGE_URL);
+  await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+  // Enable test hook before any PRESENT click
+  await page.evaluate(() => { window.__ELVIE_TEST__ = true; });
+  await page.locator('#rpPresentBtn').waitFor({ state: 'visible', timeout: 8000 });
+  // Wait for service worker to take control so publishManifest returns a
+  // fetchable http: URL rather than falling back to a blob: URL.
+  await page.waitForFunction(
+    () => !('serviceWorker' in navigator) || !!navigator.serviceWorker.controller,
+    { timeout: 8000 }
+  );
+}
+
+async function loadDemoReport(page, accession) {
+  // Retry until modules are loaded and the report loads successfully.
+  // openAgentxReport returns { ok: false, reason: 'modules_not_ready' } until
+  // the report panel modules resolve, then returns { ok: true } on success.
+  const loaded = await page.evaluate(async (acc) => {
+    for (let i = 0; i < 50; i++) {
+      try {
+        const res = await window.openAgentxReport(acc);
+        if (res?.ok) return true;
+      } catch { /* ignore */ }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return false;
+  }, accession);
+  expect(loaded, `openAgentxReport('${accession}') never succeeded`).toBe(true);
+  // Allow rendering to settle
+  await page.waitForTimeout(300);
+}
+
+async function stubWindowOpen(page) {
+  await page.evaluate(() => {
+    window.__capturedLaunchUrls = [];
+    window.open = (url) => { window.__capturedLaunchUrls.push(String(url)); return null; };
+  });
+}
+
+async function clickPresentAndWait(page) {
+  await page.locator('#rpPresentBtn').click();
+  // Wait for preview to open OR error banner to show
+  await page.waitForFunction(
+    () => !!document.querySelector('[data-testid="presentation-preview"]') ||
+          document.getElementById('rpErrorBanner')?.classList.contains('visible'),
+    { timeout: 12_000 }
+  );
+}
+
+async function getManifest(page) {
+  return page.evaluate(() => window.__ELVIE_TEST_LAST_PRESENTATION_MANIFEST__ || null);
+}
+
+// Read the published (fetchable) manifest URL exposed by the test hook.
+async function getPublishedManifestUrl(page) {
+  await page.waitForFunction(
+    () => typeof window.__ELVIE_TEST_LAST_MANIFEST_URL__ === 'string',
+    { timeout: 6000 }
+  );
+  return page.evaluate(() => window.__ELVIE_TEST_LAST_MANIFEST_URL__);
+}
+
+async function screenshot(page, name) {
+  await page.screenshot({ path: path.join(SHOT_DIR, `${name}.png`), fullPage: false });
+}
+
+function assertManifestStructure(manifest, { accession, source = 'demo' }) {
+  // Required top-level fields
+  for (const key of ['payloadVersion', 'source', 'generatedAt', 'accession', 'reportContext', 'findings', 'sections', 'presentationTitle', 'studyLabel']) {
+    expect(manifest, `missing field: ${key}`).toHaveProperty(key);
+  }
+  expect(manifest.accession).toBe(accession);
+  expect(manifest.studyLabel).toBe(accession);
+  expect(manifest.presentationTitle).toBeTruthy();
+  // reportContext fields
+  const rc = manifest.reportContext;
+  expect(rc.accession).toBe(accession);
+  expect(rc.reportSource).toBe(source);
+  expect(typeof rc.findingCount).toBe('number');
+  expect(typeof rc.navigableFindingCount).toBe('number');
+  expect(rc.navigableFindingCount).toBeGreaterThanOrEqual(0);
+  expect(typeof rc.sectionCount).toBe('number');
+  // sections and findings arrays
+  expect(Array.isArray(manifest.sections)).toBe(true);
+  expect(Array.isArray(manifest.findings)).toBe(true);
+  expect(manifest.sections.length).toBe(rc.sectionCount);
+  // No raw report text in the default payload
+  expect(manifest).not.toHaveProperty('trace');
+  const json = JSON.stringify(manifest);
+  expect(json).not.toContain('CLINICAL HISTORY');
+  expect(json).not.toContain('TECHNIQUE');
+}
+
+const EVIDENCE_STATUSES = new Set(['captured', 'no_viewer', 'no_canvas', 'canvas_empty', 'capture_failed', 'skipped_non_navigable']);
+
+function assertSectionEvidence(section, { expectNavigable, expectEvidenceStatus } = {}) {
+  expect(section, 'section missing id').toHaveProperty('id');
+  expect(section, 'section missing speakerNotes').toHaveProperty('speakerNotes');
+  expect(Array.isArray(section.imageEvidence), 'imageEvidence must be array').toBe(true);
+  for (const ev of section.imageEvidence) {
+    expect(EVIDENCE_STATUSES.has(ev.status), `unknown evidence status: ${ev.status}`).toBe(true);
+  }
+  if (expectEvidenceStatus) {
+    expect(section.imageEvidence.length).toBeGreaterThan(0);
+    expect(section.imageEvidence[0].status).toBe(expectEvidenceStatus);
+  }
+  if (typeof expectNavigable === 'boolean') {
+    expect(section.navigable).toBe(expectNavigable);
+  }
+}
+
+function assertFindingStructure(finding, { expectedAccession }) {
+  for (const key of ['id', 'title', 'text', 'accession', 'navigable', 'navigationStatus', 'imageAnchors', 'navigation']) {
+    expect(finding, `finding missing field: ${key}`).toHaveProperty(key);
+  }
+  expect(finding.accession).toBe(expectedAccession);
+  expect(Array.isArray(finding.imageAnchors)).toBe(true);
+  if (!finding.navigable) {
+    expect(finding.nonNavigableReason).toBeTruthy();
+  }
+}
+
+// ── CXR (CXR-88997) — all findings negative → non-navigable deck ──────────────
+
+test.describe('CXR demo report', () => {
+  test('loads report, launches in non-navigable mode, manifest has correct structure', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'CXR-88997');
+    await screenshot(page, 'cxr-report-loaded');
+
+    await clickPresentAndWait(page);
+
+    // CXR has no navigable image anchors → preview opens in non-navigable mode.
+    // The manifest is still published to a fetchable localhost URL.
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
+
+    const manifest = await getManifest(page);
+    expect(manifest).not.toBeNull();
+
+    assertManifestStructure(manifest, { accession: 'CXR-88997', source: 'demo' });
+
+    // CXR: all 8 seeded findings are negative → 0 navigable
+    expect(manifest.reportContext.navigableFindingCount).toBe(0);
+    expect(manifest.findings.length).toBeGreaterThan(0);
+    expect(manifest.findings.every(f => !f.navigable)).toBe(true);
+    expect(manifest.findings.every(f => f.nonNavigableReason)).toBe(true);
+    expect(manifest.findings.every(f => f.imageAnchors.length === 0)).toBe(true);
+
+    // Every finding is accession-linked
+    for (const f of manifest.findings) {
+      assertFindingStructure(f, { expectedAccession: 'CXR-88997' });
+    }
+
+    // CXR: all findings negative → 0 positive → sections is empty
+    expect(manifest.sections).toEqual([]);
+    expect(manifest.reportContext.sectionCount).toBe(0);
+
+    await screenshot(page, 'cxr-launch-non-navigable');
+  });
+});
+
+// ── CT Head (NI9f7ff9) — 2 navigable findings ────────────────────────────────
+
+test.describe('CT Head demo report', () => {
+  test('loads report, launches with 2 navigable findings, anchors correct, sections with evidence', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+    await screenshot(page, 'ct-head-presentation-source');
+
+    await clickPresentAndWait(page);
+    await screenshot(page, 'ct-head-evidence-captured');
+
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
+
+    const manifest = await getManifest(page);
+    expect(manifest).not.toBeNull();
+
+    assertManifestStructure(manifest, { accession: 'NI9f7ff9', source: 'demo' });
+
+    // CT Head: 2 navigable positive findings
+    expect(manifest.reportContext.navigableFindingCount).toBe(2);
+    expect(manifest.findings.length).toBeGreaterThan(2);
+
+    // Inspect the two known navigable findings
+    const caudate = manifest.findings.find(f => f.id === 'chronic-left-caudate-infarct');
+    expect(caudate).toBeDefined();
+    expect(caudate.navigable).toBe(true);
+    expect(caudate.navigation.seriesNumber).toBe(2);
+    expect(caudate.navigation.imageNumber).toBe(21);
+    expect(caudate.imageAnchors).toEqual([{ type: 'series-image', seriesNumber: 2, imageNumber: 21 }]);
+    expect(caudate.navigation.accession).toBe('NI9f7ff9');
+    expect(caudate.title).toBeTruthy();
+
+    const fracture = manifest.findings.find(f => f.id === 'healed-left-vertex-fracture');
+    expect(fracture).toBeDefined();
+    expect(fracture.navigable).toBe(true);
+    expect(fracture.navigation.seriesNumber).toBe(2);
+    expect(fracture.navigation.imageNumber).toBe(36);
+    expect(fracture.imageAnchors).toEqual([{ type: 'series-image', seriesNumber: 2, imageNumber: 36 }]);
+
+    // Non-navigable findings are represented explicitly, not dropped
+    const nonNav = manifest.findings.filter(f => !f.navigable);
+    expect(nonNav.length).toBeGreaterThan(0);
+    expect(nonNav.every(f => f.nonNavigableReason)).toBe(true);
+
+    // No raw report text
+    const json = JSON.stringify(manifest);
+    expect(json).not.toContain('ACCESSION: NI9f7ff9');
+
+    for (const f of manifest.findings) {
+      assertFindingStructure(f, { expectedAccession: 'NI9f7ff9' });
+    }
+
+    // Phase 3: sections — positive findings only, with speakerNotes and imageEvidence
+    // CT Head has 2 navigable positive findings in sections
+    expect(manifest.sections.length).toBeGreaterThanOrEqual(2);
+    const caudateSection = manifest.sections.find(s => s.id === 'chronic-left-caudate-infarct');
+    const fractureSection = manifest.sections.find(s => s.id === 'healed-left-vertex-fracture');
+    expect(caudateSection).toBeDefined();
+    expect(fractureSection).toBeDefined();
+
+    // Each navigable section must have evidence assigned (status varies by environment)
+    assertSectionEvidence(caudateSection, { expectNavigable: true });
+    assertSectionEvidence(fractureSection, { expectNavigable: true });
+
+    // Navigable section speakerNotes must mention location
+    expect(caudateSection.speakerNotes).toContain('Series 2');
+    expect(caudateSection.speakerNotes).toContain('Image 21');
+    expect(fractureSection.speakerNotes).toContain('Series 2');
+    expect(fractureSection.speakerNotes).toContain('Image 36');
+
+    // presentationTitle should include the accession
+    expect(manifest.presentationTitle).toContain('NI9f7ff9');
+
+    await screenshot(page, 'ct-head-launch-navigable');
+  });
+});
+
+// ── MR Knee (3852755662087132) — 2 navigable + 1 non-navigable positive ──────
+
+test.describe('MR Knee demo report', () => {
+  test('loads report, launches with 2 navigable findings, chondromalacia text-only, sections with evidence', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+    await screenshot(page, 'mr-knee-presentation-source');
+
+    await clickPresentAndWait(page);
+    await screenshot(page, 'mr-knee-evidence-captured');
+
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
+
+    const manifest = await getManifest(page);
+    expect(manifest).not.toBeNull();
+
+    assertManifestStructure(manifest, { accession: '3852755662087132', source: 'demo' });
+
+    // MR Knee: 2 navigable (meniscus + effusion), 1 non-navigable positive (chondromalacia)
+    expect(manifest.reportContext.navigableFindingCount).toBe(2);
+    expect(manifest.findings.length).toBeGreaterThan(3);
+
+    // Inspect navigable findings
+    const meniscus = manifest.findings.find(f => f.id === 'medial-meniscus-tear');
+    expect(meniscus).toBeDefined();
+    expect(meniscus.navigable).toBe(true);
+    expect(meniscus.navigation.seriesNumber).toBe(6);
+    expect(meniscus.navigation.imageNumber).toBe(23);
+    expect(meniscus.imageAnchors).toEqual([{ type: 'series-image', seriesNumber: 6, imageNumber: 23 }]);
+    expect(meniscus.navigation.accession).toBe('3852755662087132');
+
+    const effusion = manifest.findings.find(f => f.id === 'joint-effusion');
+    expect(effusion).toBeDefined();
+    expect(effusion.navigable).toBe(true);
+    expect(effusion.navigation.seriesNumber).toBe(3);
+    expect(effusion.navigation.imageNumber).toBe(14);
+    expect(effusion.imageAnchors).toEqual([{ type: 'series-image', seriesNumber: 3, imageNumber: 14 }]);
+
+    // chondromalacia is a positive finding with no coords → non-navigable, still in manifest
+    const chondro = manifest.findings.find(f => f.id === 'chondromalacia-patella');
+    expect(chondro).toBeDefined();
+    expect(chondro.navigable).toBe(false);
+    expect(chondro.nonNavigableReason).toBeTruthy();
+    expect(chondro.imageAnchors).toEqual([]);
+
+    // manifest URL transport: service-worker URL, not a session-scoped blob: ref
+    expect(manifestUrl).not.toMatch(/^blob:/);
+    // The manifest URL must be fetchable and return the correct JSON
+    const fetched = await page.evaluate(url => fetch(url).then(r => r.json()), manifestUrl);
+    expect(fetched.payloadVersion).toBe('presentation-manifest-v1');
+    expect(fetched.accession).toBe('3852755662087132');
+
+    for (const f of manifest.findings) {
+      assertFindingStructure(f, { expectedAccession: '3852755662087132' });
+    }
+
+    // Phase 3: sections — 3 positive findings become 3 sections
+    // MR Knee positive findings: meniscus (navigable), effusion (navigable), chondromalacia (non-navigable)
+    expect(manifest.sections.length).toBe(3);
+    expect(manifest.reportContext.sectionCount).toBe(3);
+
+    const meniscusSection = manifest.sections.find(s => s.id === 'medial-meniscus-tear');
+    const effusionSection = manifest.sections.find(s => s.id === 'joint-effusion');
+    const chondroSection = manifest.sections.find(s => s.id === 'chondromalacia-patella');
+
+    expect(meniscusSection).toBeDefined();
+    expect(effusionSection).toBeDefined();
+    expect(chondroSection).toBeDefined();
+
+    // Navigable sections: meniscus and effusion have evidence records
+    assertSectionEvidence(meniscusSection, { expectNavigable: true });
+    assertSectionEvidence(effusionSection, { expectNavigable: true });
+
+    // chondromalacia is non-navigable → evidence is skipped_non_navigable (text-only section)
+    assertSectionEvidence(chondroSection, {
+      expectNavigable: false,
+      expectEvidenceStatus: 'skipped_non_navigable'
+    });
+
+    // Non-navigable section speakerNotes must note absence of location
+    expect(chondroSection.speakerNotes).toContain('No specific image location');
+    expect(chondroSection.speakerNotes).not.toContain('Series');
+
+    // Navigable speakerNotes mention location
+    expect(meniscusSection.speakerNotes).toContain('Series 6');
+    expect(meniscusSection.speakerNotes).toContain('Image 23');
+    expect(effusionSection.speakerNotes).toContain('Series 3');
+    expect(effusionSection.speakerNotes).toContain('Image 14');
+
+    await screenshot(page, 'mr-knee-launch-navigable');
+  });
+});
+
+// ── Phase 4: preview deck navigation ─────────────────────────────────────────
+// Tests that assert the preview overlay renders correctly and slide navigation
+// works for both demo studies.
+
+async function clickPresentWaitForPreview(page) {
+  await page.locator('#rpPresentBtn').click();
+  await page.waitForFunction(
+    () => !!document.querySelector('[data-testid="presentation-preview"]') ||
+          document.getElementById('rpErrorBanner')?.classList.contains('visible'),
+    { timeout: 12_000 }
+  );
+  // Assert preview opened (not an error)
+  const hasPreview = await page.evaluate(() => !!document.querySelector('[data-testid="presentation-preview"]'));
+  expect(hasPreview, 'preview must open after PRESENT click').toBe(true);
+}
+
+test.describe('CT Head presentation preview', () => {
+  test('preview opens with 2 slides, navigation works, screenshots captured', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    const preview = page.locator('[data-testid="presentation-preview"]');
+    await expect(preview).toBeVisible();
+
+    // Slide 1: chronic-left-caudate-infarct
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('caudate', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Series 2');
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Image 21');
+    // Prev is disabled on first slide
+    await expect(page.locator('[data-testid="preview-prev-btn"]')).toBeDisabled();
+    // Evidence area is present (status varies)
+    await expect(page.locator('[data-testid="preview-evidence-area"]')).toBeVisible();
+
+    await screenshot(page, 'ct-head-preview-slide-1');
+
+    // Navigate to slide 2: healed-left-vertex-fracture
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('2 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('fracture', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Series 2');
+    await expect(page.locator('[data-testid="preview-location"]')).toContainText('Image 36');
+    // Next is disabled on last slide
+    await expect(page.locator('[data-testid="preview-next-btn"]')).toBeDisabled();
+
+    await screenshot(page, 'ct-head-preview-slide-2');
+
+    // Navigate back to slide 1
+    await page.locator('[data-testid="preview-prev-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
+
+    // Developer-only controls removed: no export package button, no external launch.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
+  });
+});
+
+test.describe('MR Knee presentation preview', () => {
+  test('preview shows 3 slides, chondromalacia is text-only, navigation works', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    const preview = page.locator('[data-testid="presentation-preview"]');
+    await expect(preview).toBeVisible();
+
+    // Slide 1: medial-meniscus-tear (navigable)
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('meniscus', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toBeVisible();
+    // No text-only badge on navigable slide
+    await expect(page.locator('[data-testid="preview-non-navigable-badge"]')).not.toBeVisible();
+
+    await screenshot(page, 'mr-knee-preview-slide-1');
+
+    // Slide 2: joint-effusion (navigable)
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('2 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('effusion', { ignoreCase: true });
+    await expect(page.locator('[data-testid="preview-location"]')).toBeVisible();
+
+    // Slide 3: chondromalacia-patella (non-navigable, text-only)
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('3 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('chondromalacia', { ignoreCase: true });
+    // Text-only badge must appear
+    await expect(page.locator('[data-testid="preview-non-navigable-badge"]')).toBeVisible();
+    // Evidence placeholder (not an img) for text-only slide
+    await expect(page.locator('[data-testid="preview-evidence-placeholder"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-evidence-img"]')).not.toBeVisible();
+    // Next is disabled on last slide
+    await expect(page.locator('[data-testid="preview-next-btn"]')).toBeDisabled();
+
+    await screenshot(page, 'mr-knee-preview-text-only-slide');
+
+    // Developer-only controls removed: no export package button, no external launch.
+    await expect(page.locator('[data-testid="preview-export-btn"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="preview-launch-btn"]')).toHaveCount(0);
+  });
+});
+
+// ── Phase 5: fetchable manifest / preview deck named screenshots ───────────────
+// Produces the six canonical screenshots documenting the current preview-deck
+// and fetchable-manifest flow.  File names are stable identifiers for the flow,
+// distinct from the generic slide screenshots captured by earlier tests.
+
+test.describe('fetchable manifest preview deck screenshots', () => {
+  test('CT Head: Preview label, slide nav, Play buttons, manifest URL', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+    await clickPresentWaitForPreview(page);
+
+    // Slide 1 — caudate infarct, navigable, shows Series/Image location
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('caudate', { ignoreCase: true });
+    await screenshot(page, 'fetchable-preview-deck-ct-head-slide-1');
+
+    // Play V1 / V2 are the primary actions: screenshot the slide footer.
+    await page.locator('[data-testid="preview-slide"]').screenshot({
+      path: path.join(SHOT_DIR, 'fetchable-preview-deck-play-buttons.png')
+    });
+
+    // Slide 2 — vertex fracture
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('2 / 2');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('fracture', { ignoreCase: true });
+    await screenshot(page, 'fetchable-preview-deck-ct-head-slide-2');
+
+    // Inject a debug banner showing the published (fetchable) manifest URL.
+    const manifestUrl = await getPublishedManifestUrl(page);
+    expect(manifestUrl).toMatch(/^http:\/\/localhost/);
+    await page.evaluate((url) => {
+      const div = Object.assign(document.createElement('div'), {
+        id: 'lv-manifest-url-banner',
+        innerHTML:
+          '<span style="color:#7ab8f5;font-weight:600">published manifest URL</span>' +
+          ' &nbsp;<span style="color:#6ee7b7;word-break:break-all">' +
+          String(url).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>'
+      });
+      Object.assign(div.style, {
+        position: 'fixed', bottom: '0', left: '0', right: '0', zIndex: '99999',
+        background: '#0a0a1a', borderTop: '1px solid #1f6b3a',
+        padding: '9px 16px', fontFamily: 'monospace', fontSize: '11px',
+        color: '#93c5fd', lineHeight: '1.6'
+      });
+      document.body.appendChild(div);
+    }, manifestUrl);
+    await screenshot(page, 'published-manifest-url-state');
+  });
+
+  test('MR Knee: slide 1 navigable and slide 3 text-only named screenshots', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+    await clickPresentWaitForPreview(page);
+
+    // Slide 1 — meniscus tear, navigable
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('1 / 3');
+    await expect(page.locator('[data-testid="preview-finding-title"]')).toContainText('meniscus', { ignoreCase: true });
+    await screenshot(page, 'fetchable-preview-deck-mr-knee-slide-1');
+
+    // Navigate to slide 3 — chondromalacia patella, text-only (non-navigable)
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await page.locator('[data-testid="preview-next-btn"]').click();
+    await expect(page.locator('[data-testid="preview-slide-counter"]')).toHaveText('3 / 3');
+    await expect(page.locator('[data-testid="preview-non-navigable-badge"]')).toBeVisible();
+    await expect(page.locator('[data-testid="preview-evidence-placeholder"]')).toBeVisible();
+    await screenshot(page, 'fetchable-preview-deck-mr-knee-text-only-slide');
+  });
+});
+
+test.describe('MP4 render status in preview deck', () => {
+  // The deck shows one chip per style (V1, V2). Each chip is always in exactly one
+  // of these states: watch link (rendered), create, rendering, retry (failed), or
+  // a "not rendered" note. Whether a watch link appears depends on whether the
+  // render output exists locally — both outcomes are valid here.
+
+  // Matches any of the per-style chip states for a given style.
+  function styleChip(page, style) {
+    return page.locator(
+      `[data-testid="preview-mp4-${style}-link"],` +
+      `[data-testid="preview-create-${style}-btn"],` +
+      `[data-testid="preview-mp4-${style}-rendering"],` +
+      `[data-testid="preview-retry-${style}-btn"],` +
+      `[data-testid="preview-mp4-${style}-missing"]`
+    );
+  }
+
+  test('CT Head preview shows V1 and V2 playback controls', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, 'NI9f7ff9');
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    for (const style of ['v1', 'v2']) {
+      expect(await styleChip(page, style).count()).toBeGreaterThanOrEqual(1);
+      // If a watch link is shown, it must point at the served file for that style.
+      const link = page.locator(`[data-testid="preview-mp4-${style}-link"]`);
+      if (await link.count() > 0) {
+        const href = await link.getAttribute('href');
+        const expected = style === 'v1'
+          ? /\/generated\/hyperframes\/NI9f7ff9\/renders\/NI9f7ff9\.mp4/
+          : /\/generated\/hyperframes\/NI9f7ff9-v2\/renders\/NI9f7ff9-v2\.mp4/;
+        expect(href).toMatch(expected);
+      }
+    }
+    await screenshot(page, 'ct-head-preview-mp4-controls');
+  });
+
+  test('MR Knee preview shows V1 and V2 playback controls', async ({ page }) => {
+    await loadPage(page);
+    await loadDemoReport(page, '3852755662087132');
+    await stubWindowOpen(page);
+    await clickPresentWaitForPreview(page);
+
+    for (const style of ['v1', 'v2']) {
+      expect(await styleChip(page, style).count()).toBeGreaterThanOrEqual(1);
+    }
+  });
+});
+
+test.describe('Generic MP4 button state machine', () => {
+  // Drives openPresentationPreview directly with a synthetic manifest so the
+  // style-aware state machine can be validated without a DICOM server. The deck
+  // renders one chip per style (V1, V2); this test inspects the V1 chip.
+  async function renderState(page, v1State, { withEvidence = true } = {}) {
+    return page.evaluate(async ({ v1State, withEvidence }) => {
+      const mod = await import('/esm/lv/presentation/presentationPreview.mjs');
+      const manifest = {
+        payloadVersion: 'presentation-manifest-v1', accession: 'X', presentationTitle: 'T', studyLabel: 'X',
+        sections: [{ id: 'f1', title: 'Finding', text: 't', navigable: true, seriesNumber: 1, imageNumber: 1,
+          imageEvidence: withEvidence ? [{ status: 'captured', dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' }] : [] }]
+      };
+      mod.openPresentationPreview(manifest, { videoStates: { v1: v1State }, onCreateVideo: () => {}, onExport: () => {} });
+      const has = (t) => !!document.querySelector(`[data-testid="${t}"]`);
+      const out = {
+        create: has('preview-create-v1-btn'),
+        rendering: has('preview-mp4-v1-rendering'),
+        link: has('preview-mp4-v1-link'),
+        retry: has('preview-retry-v1-btn'),
+        missing: has('preview-mp4-v1-missing'),
+      };
+      mod.closePresentationPreview();
+      return out;
+    }, { v1State, withEvidence });
+  }
+
+  test('Create / Rendering / Watch / Retry / none states render the right control', async ({ page }) => {
+    await page.goto('/index.html');
+    await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+
+    expect(await renderState(page, { canRender: true, status: 'none' })).toMatchObject({ create: true });
+    expect(await renderState(page, { canRender: true, status: 'rendering' })).toMatchObject({ rendering: true });
+    expect(await renderState(page, { canRender: true, status: 'complete', videoUrl: '/x.mp4?v=abc' })).toMatchObject({ link: true });
+    expect(await renderState(page, { canRender: true, status: 'failed' })).toMatchObject({ retry: true });
+    // No capability → no Create button, just an explanatory "not rendered" note.
+    expect(await renderState(page, { canRender: false, status: 'none' })).toMatchObject({ create: false, missing: true });
+  });
+});
+
+test.describe('Preview shows patient-friendly explanation', () => {
+  // Drives openPresentationPreview directly so the review block can be checked with
+  // and without a patient-friendly explanation, independent of a DICOM server.
+  async function reviewState(page, { withPfe }) {
+    return page.evaluate(async ({ withPfe }) => {
+      const mod = await import('/esm/lv/presentation/presentationPreview.mjs');
+      const manifest = {
+        payloadVersion: 'presentation-manifest-v1', accession: 'X',
+        presentationTitle: 'T', studyLabel: 'X',
+        sections: [{
+          id: 'f1', title: 'Chronic infarct',
+          text: 'Encephalomalacia in the left caudate head consistent with chronic infarct.',
+          patientFriendlyExplanation: withPfe
+            ? 'This is an old area of stroke damage, not a new stroke.' : null,
+          navigable: true, seriesNumber: 1, imageNumber: 18, imageEvidence: []
+        }]
+      };
+      mod.openPresentationPreview(manifest, { videoStates: {}, onCreateVideo: () => {} });
+      const q = (t) => document.querySelector(`[data-testid="${t}"]`);
+      const out = {
+        reviewPresent: !!q('preview-finding-review'),
+        clinicalText: q('preview-clinical-text')?.textContent?.trim() || null,
+        patientPresent: !!q('preview-patient-explanation'),
+        patientText: q('preview-patient-explanation')?.textContent?.trim() || null,
+        // Header "For patients" must not appear when there is no explanation.
+        hasForPatientsHeader: /for patients/i.test(q('preview-finding-review')?.textContent || ''),
+      };
+      mod.closePresentationPreview();
+      return out;
+    }, { withPfe });
+  }
+
+  test('preview includes the patient-friendly explanation when present', async ({ page }) => {
+    await page.goto('/index.html');
+    await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+
+    const s = await reviewState(page, { withPfe: true });
+    expect(s.reviewPresent).toBe(true);
+    expect(s.clinicalText).toContain('Encephalomalacia');
+    expect(s.patientPresent).toBe(true);
+    expect(s.patientText).toContain('old area of stroke damage');
+    expect(s.hasForPatientsHeader).toBe(true);
+  });
+
+  test('preview omits the patient-friendly section when absent', async ({ page }) => {
+    await page.goto('/index.html');
+    await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+
+    const s = await reviewState(page, { withPfe: false });
+    // Clinical review still renders, but the For-patients section/header is gone.
+    expect(s.reviewPresent).toBe(true);
+    expect(s.clinicalText).toContain('Encephalomalacia');
+    expect(s.patientPresent).toBe(false);
+    expect(s.hasForPatientsHeader).toBe(false);
+  });
+});
+
+test.describe('Preview Deck is the single source of truth for evidence', () => {
+  // Proves the image the Preview Deck displays is byte-identical to the image the
+  // HTML exporter embeds — no second capture/render happens for the MP4 path.
+  // Uses a known evidence data URL so it runs without a DICOM server.
+
+  const KNOWN_PNG =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFklEQVR42mNk' +
+    'YPhfz0AEYBxVSF+FAP1mB+0Z2N3eAAAAAElFTkSuQmCC';
+
+  test('Preview Deck image hash equals HTML exporter image hash', async ({ page }) => {
+    await loadPage(page);
+
+    const result = await page.evaluate(async (KNOWN_PNG) => {
+      const sha256 = async (b64) => {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+      };
+      const stripData = (src) => (src || '').replace(/^data:image\/\w+;base64,/, '');
+
+      const manifest = {
+        payloadVersion: 'presentation-manifest-v1',
+        accession: 'TEST-SSOT',
+        presentationTitle: 'SSOT test',
+        studyLabel: 'TEST-SSOT',
+        sections: [{
+          id: 'finding-ssot', title: 'SSOT finding', text: 'single source of truth',
+          navigable: true, seriesNumber: 1, imageNumber: 1, speakerNotes: 'note',
+          imageEvidence: [{ status: 'captured', dataUrl: KNOWN_PNG }]
+        }]
+      };
+
+      const [previewMod, exporterMod] = await Promise.all([
+        import('/esm/lv/presentation/presentationPreview.mjs'),
+        import('/esm/lv/presentation/htmlPresentationExporter.mjs')
+      ]);
+
+      // 1. What the Preview Deck actually displays.
+      previewMod.openPresentationPreview(manifest, {});
+      const img = document.querySelector('[data-testid="preview-evidence-img"]');
+      const previewSrc = img?.getAttribute('src') || '';
+      const previewHash = await sha256(stripData(previewSrc));
+
+      // 2. What the HTML exporter embeds (data-url mode; dataUrl flows through directly).
+      const html = exporterMod.exportHtmlComposition(manifest, { assetMode: 'data-url' });
+      const m = html.match(/src="data:image\/png;base64,([^"]+)"/);
+      const htmlHash = m ? await sha256(m[1]) : null;
+
+      previewMod.closePresentationPreview();
+      return {
+        previewIsData: previewSrc.startsWith('data:'),
+        previewHash, htmlHash,
+        knownHash: await sha256(stripData(KNOWN_PNG))
+      };
+    }, KNOWN_PNG);
+
+    expect(result.previewIsData).toBe(true);
+    expect(result.previewHash).toBe(result.knownHash);
+    expect(result.htmlHash).toBe(result.knownHash);
+    expect(result.htmlHash).toBe(result.previewHash);
+  });
+});
+
+test.describe('CT Head exported evidence package', () => {
+  // These tests validate the output of `npm run export:hyperframes:ct-head`.
+  // They run against files on disk — no browser load needed.
+  // They are skipped if the package has not been generated yet.
+
+  const pkgDir     = path.join(__dirname, '../../web/generated/hyperframes/NI9f7ff9');
+  const manifestPath = path.join(pkgDir, 'presentation.json');
+  const assetsDir  = path.join(pkgDir, 'assets');
+  const mp4Path    = path.join(pkgDir, 'renders/NI9f7ff9.mp4');
+  const debugDir   = path.join(pkgDir, 'debug');
+  const renderInputShot = path.join(debugDir, 'render-input-slide-1.png');
+  const renderedFrameShot = path.join(debugDir, 'rendered-frame-1.png');
+  const renderMetaPath = path.join(pkgDir, 'render.json');
+
+  test.skip(!fs.existsSync(manifestPath), 'presentation.json not yet generated — run npm run build:hyperframes:ct-head');
+
+  test('evidence metadata records series/image and capture source', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const captured = manifest.sections.flatMap(s => s.imageEvidence ?? [])
+      .filter(e => e.status === 'captured');
+    expect(captured.length).toBeGreaterThan(0);
+    for (const ev of captured) {
+      expect(ev.captureSource).toBe('viewport-canvas');
+      expect(Number.isFinite(ev.seriesNumber)).toBe(true);
+      expect(Number.isFinite(ev.imageNumber)).toBe(true);
+    }
+  });
+
+  test('when viewport state is available, evidence includes window/level fields', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const withState = manifest.sections.flatMap(s => s.imageEvidence ?? [])
+      .filter(e => e.status === 'captured' && e.viewportState);
+    // Skip only if the capture ran without a live viewer (no DICOM available).
+    test.skip(withState.length === 0, 'no viewport state captured (viewer not loaded with DICOM)');
+    for (const ev of withState) {
+      expect(Number.isFinite(ev.viewportState.windowCenter)).toBe(true);
+      expect(Number.isFinite(ev.viewportState.windowWidth)).toBe(true);
+    }
+    // The CT Head fracture finding should preserve the bone window (wide WW).
+    const fracture = manifest.sections.find(s => s.id === 'healed-left-vertex-fracture');
+    const fracEv = fracture?.imageEvidence?.find(e => e.status === 'captured' && e.viewportState);
+    if (fracEv) {
+      expect(fracEv.appliedPreset).toBe('bone');
+      expect(fracEv.viewportState.windowWidth).toBeGreaterThan(1000);
+    }
+  });
+
+  test('presentation.json has sections with imageEvidence asset paths', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    expect(manifest.payloadVersion).toBe('presentation-manifest-v1');
+    expect(manifest.accession).toBe('NI9f7ff9');
+    expect(Array.isArray(manifest.sections)).toBe(true);
+    expect(manifest.sections.length).toBeGreaterThan(0);
+
+    const captured = manifest.sections.filter(s =>
+      s.imageEvidence?.some(e => e.status === 'captured' && e.assetPath)
+    );
+    expect(captured.length).toBeGreaterThan(0);
+
+    for (const section of captured) {
+      const ev = section.imageEvidence.find(e => e.status === 'captured' && e.assetPath);
+      expect(ev.assetPath).toMatch(/^assets\/finding-\d+\.png$/);
+      // No data URLs should remain (they are replaced with asset paths during export)
+      expect(ev.dataUrl).toBeUndefined();
+    }
+  });
+
+  test('exported PNG assets exist and are non-zero', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const assetNames = manifest.sections
+      .flatMap(s => s.imageEvidence ?? [])
+      .filter(e => e.status === 'captured' && e.assetPath)
+      .map(e => e.assetPath.replace(/^assets\//, ''));
+
+    expect(assetNames.length).toBeGreaterThan(0);
+
+    for (const name of assetNames) {
+      const assetPath = path.join(assetsDir, name);
+      expect(fs.existsSync(assetPath), `Asset missing: ${assetPath}`).toBe(true);
+      const size = fs.statSync(assetPath).size;
+      expect(size, `Asset empty: ${name}`).toBeGreaterThan(1000);
+    }
+  });
+
+  test('rendered MP4 exists and is non-zero', () => {
+    test.skip(!fs.existsSync(mp4Path), 'MP4 not yet generated — run npm run build:hyperframes:ct-head');
+    const size = fs.statSync(mp4Path).size;
+    expect(size).toBeGreaterThan(50_000); // at least 50 KB
+  });
+
+  test('render-input screenshot exists, is non-zero, and the slide image decoded', () => {
+    test.skip(!fs.existsSync(renderMetaPath), 'render.json not yet generated — run npm run render:hyperframes:ct-head');
+    expect(fs.existsSync(renderInputShot), `missing ${renderInputShot}`).toBe(true);
+    expect(fs.statSync(renderInputShot).size).toBeGreaterThan(5000);
+    const meta = JSON.parse(fs.readFileSync(renderMetaPath, 'utf8'));
+    // The exact HTML passed to HyperFrames had a decoded CT image.
+    expect(meta.renderInputImageDecoded).toBe(true);
+    expect(meta.assetMode).toBe('data-url');
+    expect(meta.embeddedAssets).toBeGreaterThan(0);
+  });
+
+  test('rendered-frame screenshot exists and is not placeholder-only', () => {
+    test.skip(!fs.existsSync(renderMetaPath), 'render.json not yet generated — run npm run render:hyperframes:ct-head');
+    const meta = JSON.parse(fs.readFileSync(renderMetaPath, 'utf8'));
+    // ffmpeg may be unavailable in some CI environments; only assert when a
+    // frame was actually extracted and analysed.
+    test.skip(meta.renderedFrameContainsImage == null, 'ffmpeg frame extraction unavailable');
+    expect(fs.existsSync(renderedFrameShot), `missing ${renderedFrameShot}`).toBe(true);
+    expect(fs.statSync(renderedFrameShot).size).toBeGreaterThan(5000);
+    // The extracted MP4 frame visibly contains the CT image (not the placeholder).
+    expect(meta.renderedFrameContainsImage).toBe(true);
+  });
+
+  test('render.json proves Preview Deck evidence hash matches HTML-embedded hash', () => {
+    test.skip(!fs.existsSync(renderMetaPath), 'render.json not yet generated — run npm run render:hyperframes:ct-head');
+    const meta = JSON.parse(fs.readFileSync(renderMetaPath, 'utf8'));
+    expect(Array.isArray(meta.evidenceProvenance)).toBe(true);
+    expect(meta.evidenceProvenance.length).toBeGreaterThan(0);
+    for (const p of meta.evidenceProvenance) {
+      expect(p.previewSha256, `finding ${p.finding} missing previewSha256`).toBeTruthy();
+      expect(p.htmlSha256, `finding ${p.finding} missing htmlSha256`).toBeTruthy();
+      expect(p.previewSha256, `finding ${p.finding} hash mismatch`).toBe(p.htmlSha256);
+      expect(p.match).toBe(true);
+    }
+  });
+
+  test('preview-deck screenshots exist for each captured finding', () => {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const capturedIdx = manifest.sections
+      .map((s, i) => ({ i, has: (s.imageEvidence || []).some(e => e.status === 'captured') }))
+      .filter(x => x.has)
+      .map(x => x.i + 1);
+    test.skip(capturedIdx.length === 0, 'no captured findings');
+    for (const n of capturedIdx) {
+      const shot = path.join(debugDir, `preview-deck-finding-${n}.png`);
+      // Preview Deck screenshots require the export to have run with a live viewer.
+      test.skip(!fs.existsSync(shot), `preview-deck screenshot ${n} not generated`);
+      expect(fs.statSync(shot).size).toBeGreaterThan(2000);
+    }
+  });
+});
