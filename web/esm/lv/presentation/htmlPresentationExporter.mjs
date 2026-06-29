@@ -540,9 +540,15 @@ export function buildTitleSceneV2({ manifest, start, backdropUrls = [] }) {
 export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start, resolveOpts }) {
   const idA = `sc-find-${sceneIndex}-a`;
   const idB = `sc-find-${sceneIndex}-b`;
+  const sweepId = `${idA}-hl`;
   const sentence = norm(section.reportSentence) || norm(section.text);
-  // The finding title comes straight from the finding object (same title the
-  // following finding slide uses) — never extracted from the report sentence.
+  // Report beat reuses V1's reading-sweep emphasis (the shared `.hl` mechanic):
+  // the key finding phrase illuminates bold/bright *within* the report sentence,
+  // keeping the surrounding context — no separate title card. Plain highlight (no
+  // extra style) so the mechanics are identical to V1's scene builder.
+  const highlighted = highlightSentence(sentence, section.highlightPhrase, sweepId);
+  const hasHighlight = !!(section.highlightPhrase && sentence.toLowerCase()
+    .includes(norm(section.highlightPhrase).toLowerCase()));
   const title = esc(norm(section.title));
   const imgUrl = resolveEvidenceUrl(section, resolveOpts);
   const pointer = section.pointer;
@@ -641,23 +647,27 @@ export function buildFindingSceneV2({ section, findingNumber, sceneIndex, start,
     ${rightStage}
     ${orientLabel}`);
 
-  // Beat A is a bridge: the full report sentence (context) sits above the finding
-  // title, which is the same headline the following finding slide carries. The
-  // sentence dims slightly once the title lands so attention hands off cleanly.
+  // Beat A is a narrative bridge into the image: the full report sentence reads in,
+  // then the key finding phrase illuminates in place via V1's reading-sweep (the
+  // `.hl` mechanic) — bold/bright, surrounding context preserved — and the whole
+  // line hands off into the finding slide. No separate title card. The line uses
+  // V1's exact treatment (50px / #54607e base) so the shared `.hl` sweep renders
+  // identically; only the V2 cyan label and V2 spacing/timing differ.
   const beatA = clip(idA, start, textDur, `
     <div style="position:absolute;inset:0;background:linear-gradient(160deg,#080814 0%,#0a0a18 100%);"></div>
     <div id="${idA}-wrap" style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 170px;">
       <div style="font-size:31px;font-weight:700;color:#2bd4e8;text-transform:uppercase;letter-spacing:.12em;margin-bottom:30px;">Finding ${findingNumber} &nbsp;·&nbsp; Report</div>
-      <div id="${idA}-line" style="font-size:34px;font-weight:500;color:#c8d6ea;line-height:1.5;opacity:0;">${esc(sentence)}</div>
-      <div id="${idA}-title" style="font-size:68px;font-weight:800;color:#ffffff;line-height:1.08;text-transform:uppercase;letter-spacing:-.01em;margin-top:42px;opacity:0;">${title}</div>
+      <div id="${idA}-line" style="font-size:50px;font-weight:600;color:#54607e;line-height:1.45;opacity:0;">${highlighted}</div>
     </div>`);
 
   const tl = [
     `tl.to("#${idA}", { opacity: 1, duration: ${f2(TV2.xfade)} }, ${f2(start)});`,
-    `tl.fromTo("#${idA}-line", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 0.2)});`,
-    `tl.fromTo("#${idA}-title", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, ${f2(start + 1.1)});`,
-    `tl.to("#${idA}-line", { opacity: 0.5, duration: 0.5, ease: "power1.out" }, ${f2(start + 1.1)});`,
+    `tl.fromTo("#${idA}-line", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" }, ${f2(start + 0.25)});`,
   ];
+  // Reading sweep across the highlighted phrase — identical mechanic to V1.
+  if (hasHighlight) {
+    tl.push(`tl.fromTo("#${sweepId}", { backgroundPosition: "100% 0" }, { backgroundPosition: "0% 0", duration: 1.0, ease: "power1.inOut" }, ${f2(start + 0.9)});`);
+  }
 
   // Beat A lifts and fades; image cross-dissolves in with more overlap than V1.
   tl.push(`tl.to("#${idA}-wrap", { y: -50, scale: 0.93, opacity: 0, duration: ${f2(TV2.xfade + 0.2)}, ease: "power2.in" }, ${f2(imgStart - 0.1)});`);
