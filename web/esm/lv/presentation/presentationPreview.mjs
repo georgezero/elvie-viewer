@@ -114,13 +114,30 @@ function slideHtml(manifest, section, idx, total, { videoStates }) {
         &#9888; Text-only &mdash; no image location available
        </div>`;
 
-  const notes = norm(section.speakerNotes)
-    ? `<div data-testid="preview-speaker-notes"
-        style="font-size:12px;color:#555;border-top:1px solid #1e1e32;
-               padding-top:10px;margin-bottom:14px;line-height:1.6;">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;
-                    color:#444;margin-bottom:3px;">Finding ${idx + 1} of ${total}</div>
-        ${esc(norm(section.speakerNotes))}
+  // Review block: what the finding looks like in the video. Shows the clinical
+  // sentence and, when present, the patient-friendly explanation (this is the copy
+  // that appears in the V2 presentation). The "For patients" section is omitted
+  // entirely — header and all — when no explanation exists.
+  const clinicalText = norm(section.text);
+  const patientText = norm(section.patientFriendlyExplanation);
+  const subLabel = 'font-size:10px;text-transform:uppercase;letter-spacing:.06em;';
+  const patientBlock = patientText
+    ? `<div style="margin-top:9px;">
+        <div style="${subLabel}color:#5a7da8;margin-bottom:3px;">For patients</div>
+        <div data-testid="preview-patient-explanation"
+          style="font-size:12px;color:#9fb4d0;line-height:1.6;">${esc(patientText)}</div>
+       </div>`
+    : '';
+  const review = (clinicalText || patientText)
+    ? `<div data-testid="preview-finding-review"
+        style="border-top:1px solid #1e1e32;padding-top:10px;margin-bottom:14px;">
+        <div style="${subLabel}color:#444;margin-bottom:6px;">Finding ${idx + 1} of ${total}</div>
+        ${clinicalText ? `<div>
+          <div style="${subLabel}color:#556;margin-bottom:3px;">Clinical</div>
+          <div data-testid="preview-clinical-text"
+            style="font-size:12px;color:#aab;line-height:1.6;">${esc(clinicalText)}</div>
+         </div>` : ''}
+        ${patientBlock}
        </div>`
     : '';
 
@@ -167,7 +184,7 @@ function slideHtml(manifest, section, idx, total, { videoStates }) {
     ${evidenceHtml(section)}
   </div>
 
-  ${notes}
+  ${review}
 
   <div style="display:flex;justify-content:space-between;align-items:center;
               gap:14px;flex-wrap:wrap;border-top:1px solid #1a1a30;padding-top:16px;">

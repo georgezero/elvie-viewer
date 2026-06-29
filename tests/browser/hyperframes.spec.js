@@ -147,7 +147,8 @@ test.describe('Hyperframes PRESENT integration', () => {
     await expect(paste).toBeVisible();
     await expect(upload).toBeVisible();
 
-    await expect(present).toHaveText('Video Report');
+    await expect(present).toHaveText('Video');
+    await expect(present).toHaveAttribute('title', 'Generate Video Report');
 
     const hdr = page.locator('.report-panel-hdr');
     await expect(hdr).toBeVisible();

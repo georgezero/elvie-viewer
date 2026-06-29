@@ -3538,7 +3538,7 @@
         </select>
         <button class="btn btn-ghost rp-paste-btn" id="rpPasteBtn" onclick="toggleRpPasteForm()" title="Paste and parse a report" style="font-size:10px;padding:3px 8px;">PASTE</button>
         <button class="btn btn-ghost rp-upload-btn" id="rpUploadBtn" onclick="toggleRpUploadForm()" title="Upload and preprocess report file" style="font-size:10px;padding:3px 8px;">UPLOAD</button>
-        <button class="btn btn-ghost rp-present-btn" id="rpPresentBtn" onclick="launchHyperframesPresentation()" title="Generate Video Report" style="font-size:10px;padding:3px 8px;">Video Report</button>
+        <button class="btn btn-ghost rp-present-btn" id="rpPresentBtn" onclick="launchHyperframesPresentation()" title="Generate Video Report" style="font-size:10px;padding:3px 8px;">Video</button>
       </div>
       <div class="report-panel-meta" id="rpMeta" style="display:none;">
         <div class="report-panel-meta-inner" id="rpMetaInner"></div>
@@ -16795,7 +16795,7 @@ async function launchHyperframesPresentation(opts = {}) {
   const debug = !!(opts.debug ?? window.__elvieHyperDebug);
 
   const btn = document.getElementById('rpPresentBtn');
-  const prevBtnText = btn?.textContent ?? 'Video Report';
+  const prevBtnText = btn?.textContent ?? 'Video';
   if (btn) btn.textContent = 'Preparing...';
 
   try {

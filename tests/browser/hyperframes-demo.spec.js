@@ -631,6 +631,63 @@ test.describe('Generic MP4 button state machine', () => {
   });
 });
 
+test.describe('Preview shows patient-friendly explanation', () => {
+  // Drives openPresentationPreview directly so the review block can be checked with
+  // and without a patient-friendly explanation, independent of a DICOM server.
+  async function reviewState(page, { withPfe }) {
+    return page.evaluate(async ({ withPfe }) => {
+      const mod = await import('/esm/lv/presentation/presentationPreview.mjs');
+      const manifest = {
+        payloadVersion: 'presentation-manifest-v1', accession: 'X',
+        presentationTitle: 'T', studyLabel: 'X',
+        sections: [{
+          id: 'f1', title: 'Chronic infarct',
+          text: 'Encephalomalacia in the left caudate head consistent with chronic infarct.',
+          patientFriendlyExplanation: withPfe
+            ? 'This is an old area of stroke damage, not a new stroke.' : null,
+          navigable: true, seriesNumber: 1, imageNumber: 18, imageEvidence: []
+        }]
+      };
+      mod.openPresentationPreview(manifest, { videoStates: {}, onCreateVideo: () => {} });
+      const q = (t) => document.querySelector(`[data-testid="${t}"]`);
+      const out = {
+        reviewPresent: !!q('preview-finding-review'),
+        clinicalText: q('preview-clinical-text')?.textContent?.trim() || null,
+        patientPresent: !!q('preview-patient-explanation'),
+        patientText: q('preview-patient-explanation')?.textContent?.trim() || null,
+        // Header "For patients" must not appear when there is no explanation.
+        hasForPatientsHeader: /for patients/i.test(q('preview-finding-review')?.textContent || ''),
+      };
+      mod.closePresentationPreview();
+      return out;
+    }, { withPfe });
+  }
+
+  test('preview includes the patient-friendly explanation when present', async ({ page }) => {
+    await page.goto('/index.html');
+    await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+
+    const s = await reviewState(page, { withPfe: true });
+    expect(s.reviewPresent).toBe(true);
+    expect(s.clinicalText).toContain('Encephalomalacia');
+    expect(s.patientPresent).toBe(true);
+    expect(s.patientText).toContain('old area of stroke damage');
+    expect(s.hasForPatientsHeader).toBe(true);
+  });
+
+  test('preview omits the patient-friendly section when absent', async ({ page }) => {
+    await page.goto('/index.html');
+    await page.waitForFunction(() => typeof window.setActiveReportContext === 'function');
+
+    const s = await reviewState(page, { withPfe: false });
+    // Clinical review still renders, but the For-patients section/header is gone.
+    expect(s.reviewPresent).toBe(true);
+    expect(s.clinicalText).toContain('Encephalomalacia');
+    expect(s.patientPresent).toBe(false);
+    expect(s.hasForPatientsHeader).toBe(false);
+  });
+});
+
 test.describe('Preview Deck is the single source of truth for evidence', () => {
   // Proves the image the Preview Deck displays is byte-identical to the image the
   // HTML exporter embeds — no second capture/render happens for the MP4 path.
